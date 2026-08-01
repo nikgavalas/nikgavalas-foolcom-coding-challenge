@@ -1,0 +1,11 @@
+# .gtrconfig - commit this to share settings
+[copy]
+    includeDirs = node_modules
+    excludeDirs = node_modules/.cache
+
+[hooks]
+    postCreate = npm install
+
+[defaults]
+    editor = vscode
+    ai = claude
