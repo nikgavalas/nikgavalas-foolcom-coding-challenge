@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls*)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(tree*)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(pwd)",
+      "Bash(which *)",
+      "Bash(date)",
+      "Bash(echo *)",
+      "Bash(git status)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(npm run *)",
+      "Bash(gh:*)",
+      "Bash(npx prettier *)",
+      "Bash(npx tsc *)",
+      "Bash(node -e ' *)",
+      "Bash(npx eslint *)",
+      "Bash(npx playwright *)",
+      "Bash(node *)"
+    ]
+  }
+}
