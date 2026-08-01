@@ -10,7 +10,9 @@ export default defineConfig({
   // corrupt each other's state.
   fullyParallel: false,
   workers: 1,
-  reporter: "list",
+  reporter: process.env.CI
+    ? [["github"], ["html", { open: "never" }]]
+    : "list",
   use: {
     baseURL,
   },
