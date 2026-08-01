@@ -1,7 +1,8 @@
 import { ArticleData, ArticleIndexData } from "@/types/article";
 
+const PORT = process.env.PORT ?? "3000";
 const CMS_BASE_URL =
-  process.env.CMS_BASE_URL ?? "http://localhost:3000/api/cms";
+  process.env.CMS_BASE_URL ?? `http://localhost:${PORT}/api/cms`;
 
 export async function getArticle(
   path: string,

@@ -18,7 +18,7 @@ Step 1 comes first so there is a failing acceptance test to build against.
 | # | Step | Ships | Status |
 |---|---|---|---|
 | 0 | Docs scaffold | `docs/` | ☑ |
-| 1 | Test harness | `playwright.config.ts`, `vitest.config.ts`, `tests/` | ☐ |
+| 1 | Test harness | `playwright.config.ts`, `vitest.config.ts`, `tests/` | ☑ |
 | 2 | Cache store | `lib/cache/store.ts` | ☐ |
 | 3 | Article validator | `lib/cms/validateArticle.ts` | ☐ |
 | 4 | Upstream client | `lib/cms/cmsClient.ts` | ☐ |
