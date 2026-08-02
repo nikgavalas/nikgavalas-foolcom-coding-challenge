@@ -37,6 +37,13 @@ function getStore() {
   return getCacheStore<ArticleCacheEntry>(NAMESPACE);
 }
 
+// Used by instrumentation.ts's background refresher to discover which
+// article paths are currently warm, without it needing to know the cache's
+// internal namespace string.
+export function getWarmArticlePaths(): string[] {
+  return getStore().keys();
+}
+
 function getOrStartRefresh(
   path: string,
   caller: CmsCaller,
