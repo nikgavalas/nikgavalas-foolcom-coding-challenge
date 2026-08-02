@@ -5,6 +5,7 @@ import {
   FRESH_TTL_MS,
   REVALIDATE_DEADLINE_MS,
   getArticle,
+  revalidatePath,
 } from "@/lib/cache/articleCache";
 import { CircuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
@@ -296,5 +297,62 @@ describe("getArticle circuit breaker interaction", () => {
     expect(result.status).toBe("STALE");
     expect(result.article).toEqual(stale);
     expect(hangingClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("revalidatePath", () => {
+  let breaker: CircuitBreaker;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    breaker = new CircuitBreaker();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("leaves the existing entry intact and servable when the upstream is down", async () => {
+    const path = makePath();
+    const fresh = makeArticle(path, 1);
+    // Fresh, not stale — revalidatePath must force revalidation regardless.
+    articleStore().set(path, { article: fresh, cachedAt: Date.now() });
+    const client = vi.fn(
+      async (): Promise<CmsClientResult> => ({ outcome: "http_error", durationMs: 5 }),
+    );
+
+    const result = await revalidatePath(path, { caller: "push", client, breaker });
+
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(result.article).toEqual(fresh);
+    expect(articleStore().get(path)?.article).toEqual(fresh);
+  });
+
+  it("overwrites the entry when the upstream succeeds", async () => {
+    const path = makePath();
+    const original = makeArticle(path, 1);
+    const corrected = makeArticle(path, 2);
+    articleStore().set(path, { article: original, cachedAt: Date.now() });
+    const client = vi.fn(
+      async (): Promise<CmsClientResult> => ({ outcome: "ok", article: corrected, durationMs: 5 }),
+    );
+
+    const result = await revalidatePath(path, { caller: "push", client, breaker });
+
+    expect(result.article).toEqual(corrected);
+    expect(articleStore().get(path)?.article).toEqual(corrected);
+  });
+
+  it("performs a cold fetch for a path that was never cached", async () => {
+    const path = makePath();
+    const article = makeArticle(path);
+    const client = vi.fn(
+      async (): Promise<CmsClientResult> => ({ outcome: "ok", article, durationMs: 5 }),
+    );
+
+    const result = await revalidatePath(path, { caller: "push", client, breaker });
+
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(result.article).toEqual(article);
   });
 });

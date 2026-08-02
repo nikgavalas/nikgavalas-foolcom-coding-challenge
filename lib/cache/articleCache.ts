@@ -180,3 +180,23 @@ export async function getArticle(
     upstreamOutcome: raced.landed ? raced.value.outcome : undefined,
   };
 }
+
+// Push invalidation (step 9): force a stale-and-refresh cycle through the
+// same single-flight/breaker-aware path getArticle already uses, so a push
+// gets the same "only overwrite on ok" safety — a push during an outage
+// leaves the existing entry intact and servable rather than erroring.
+export async function revalidatePath(
+  path: string,
+  options: {
+    caller: CmsCaller;
+    client?: CmsClientFn;
+    breaker?: CircuitBreaker;
+  },
+): Promise<ArticleCacheResult> {
+  const store = getStore();
+  const entry = store.get(path);
+  if (entry) {
+    store.set(path, { ...entry, cachedAt: 0 });
+  }
+  return getArticle(path, options);
+}
