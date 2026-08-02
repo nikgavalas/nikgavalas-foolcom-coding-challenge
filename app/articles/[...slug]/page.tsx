@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
+import { ARTICLE_UNAVAILABLE_MESSAGE } from "@/lib/articleMessages";
 import { getArticle } from "@/services/articleService";
 
 export const dynamic = "force-dynamic";
@@ -49,7 +50,7 @@ export default async function ArticlePage({ params, searchParams }: PageProps) {
     return (
       <div className="mx-auto w-full max-w-2xl px-6 py-12">
         <p className="text-lg text-zinc-600 dark:text-zinc-400">
-          This article is temporarily unavailable. Please try again shortly.
+          {ARTICLE_UNAVAILABLE_MESSAGE}
         </p>
       </div>
     );
