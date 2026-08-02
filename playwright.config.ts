@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 const PORT = process.env.PORT ?? "3000";
 const baseURL = `http://localhost:${PORT}`;
+const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET ?? "test-revalidate-secret";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -21,7 +22,11 @@ export default defineConfig({
     // representative of the latency behavior under test — always build.
     command: "npm run build && npm run start",
     url: baseURL,
-    env: { PORT },
+    env: {
+      PORT,
+      REVALIDATE_SECRET,
+      CMS_WEBHOOK_URL: `${baseURL}/api/internal/revalidate`,
+    },
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
