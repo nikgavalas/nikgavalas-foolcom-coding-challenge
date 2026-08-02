@@ -20,7 +20,7 @@ Step 1 comes first so there is a failing acceptance test to build against.
 | 0 | Docs scaffold | `docs/` | ☑ |
 | 1 | Test harness | `playwright.config.ts`, `vitest.config.ts`, `tests/` | ☑ |
 | 2 | Cache store | `lib/cache/store.ts` | ☐ |
-| 3 | Article validator | `lib/cms/validateArticle.ts` | ☐ |
+| 3 | Article validator | `lib/cms/validateArticle.ts` | ☑ |
 | 4 | Upstream client | `lib/cms/cmsClient.ts` | ☐ |
 | 5 | Cache policy engine | `lib/cache/articleCache.ts` | ☐ |
 | 6 | Circuit breaker | `lib/cache/circuitBreaker.ts` | ☐ |
