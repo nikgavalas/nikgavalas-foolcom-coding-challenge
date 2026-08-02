@@ -1,3 +1,4 @@
+import { CircuitBreaker, circuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
 import { CmsCaller, CmsClientResult, CmsOutcome, fetchArticle } from "@/lib/cms/cmsClient";
 import { ArticleData } from "@/types/article";
@@ -41,9 +42,20 @@ function getOrStartRefresh(
   caller: CmsCaller,
   source: string | undefined,
   client: CmsClientFn,
+  breaker: CircuitBreaker,
 ): Promise<CmsClientResult> {
   const existing = inFlight.get(path);
   if (existing) return existing;
+
+  // Known interaction: `?source=down` trips the global breaker, so a
+  // following healthy request may serve STALE for up to the 5s cooldown even
+  // though content is correct. The background refresher (step 8) never sends
+  // `source`, so it probes on its own and closes the circuit — reads don't
+  // need to, which is why a rejected attempt below skips the upstream call
+  // entirely rather than making one and ignoring the result.
+  if (!breaker.isAllowed()) {
+    return Promise.resolve({ outcome: "http_error", durationMs: 0 });
+  }
 
   // Call the client synchronously (not via a `.then`-deferred wrapper) so
   // this stays within the same synchronous prefix that the single-flight
@@ -60,6 +72,13 @@ function getOrStartRefresh(
     // if it throws/rejects; normalize rather than crash the read path.
     .catch((): CmsClientResult => ({ outcome: "http_error", durationMs: 0 }))
     .then((result) => {
+      // not_found is a genuine answer, not an upstream failure — it proves
+      // the upstream is reachable, so it counts as a breaker success.
+      if (result.outcome === "ok" || result.outcome === "not_found") {
+        breaker.onSuccess();
+      } else {
+        breaker.onFailure();
+      }
       // Non-negotiable: an entry is overwritten ONLY by an `ok` outcome.
       if (result.outcome === "ok" && result.article) {
         getStore().set(path, { article: result.article, cachedAt: Date.now() });
@@ -100,14 +119,19 @@ async function withDeadline<T>(
 // breaks that guarantee.
 export async function getArticle(
   path: string,
-  options: { caller: CmsCaller; source?: string; client?: CmsClientFn },
+  options: {
+    caller: CmsCaller;
+    source?: string;
+    client?: CmsClientFn;
+    breaker?: CircuitBreaker;
+  },
 ): Promise<ArticleCacheResult> {
-  const { caller, source, client = fetchArticle } = options;
+  const { caller, source, client = fetchArticle, breaker = circuitBreaker } = options;
   const store = getStore();
   const entry = store.get(path);
 
   if (!entry) {
-    const result = await getOrStartRefresh(path, caller, source, client);
+    const result = await getOrStartRefresh(path, caller, source, client, breaker);
     if (result.outcome === "ok" && result.article) {
       const stored = store.get(path)!;
       return {
@@ -126,7 +150,7 @@ export async function getArticle(
   }
 
   const raced = await withDeadline(
-    getOrStartRefresh(path, caller, source, client),
+    getOrStartRefresh(path, caller, source, client, breaker),
     REVALIDATE_DEADLINE_MS,
   );
 

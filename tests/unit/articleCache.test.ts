@@ -6,6 +6,7 @@ import {
   REVALIDATE_DEADLINE_MS,
   getArticle,
 } from "@/lib/cache/articleCache";
+import { CircuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
 import { CmsClientResult } from "@/lib/cms/cmsClient";
 import { ArticleData } from "@/types/article";
@@ -52,8 +53,14 @@ function deferredClient() {
 }
 
 describe("getArticle", () => {
+  let breaker: CircuitBreaker;
+
   beforeEach(() => {
     vi.useFakeTimers();
+    // Fresh per test: the exported singleton is shared, and this suite's own
+    // failure-outcome tests would otherwise cumulatively trip it across
+    // tests (BREAKER_FAIL_THRESHOLD = 3), making later tests order-dependent.
+    breaker = new CircuitBreaker();
   });
 
   afterEach(() => {
@@ -66,7 +73,7 @@ describe("getArticle", () => {
     articleStore().set(path, { article, cachedAt: Date.now() });
     const client = vi.fn();
 
-    const result = await getArticle(path, { caller: "read", client });
+    const result = await getArticle(path, { caller: "read", client, breaker });
 
     expect(result.status).toBe("HIT");
     expect(result.article).toEqual(article);
@@ -83,7 +90,7 @@ describe("getArticle", () => {
       async (): Promise<CmsClientResult> => ({ outcome: "http_error", durationMs: 5 }),
     );
 
-    const result = await getArticle(path, { caller: "read", client });
+    const result = await getArticle(path, { caller: "read", client, breaker });
 
     expect(result.status).toBe("STALE");
     expect(result.article).toEqual(stale);
@@ -98,7 +105,7 @@ describe("getArticle", () => {
     seedStale(path, stale);
     const { client, resolve } = deferredClient();
 
-    const pending = getArticle(path, { caller: "read", client });
+    const pending = getArticle(path, { caller: "read", client, breaker });
     resolve({ outcome: "ok", article: updated, durationMs: 5 });
     const result = await pending;
 
@@ -116,7 +123,7 @@ describe("getArticle", () => {
     seedStale(path, stale);
     const { client, resolve } = deferredClient();
 
-    const pending = getArticle(path, { caller: "read", client });
+    const pending = getArticle(path, { caller: "read", client, breaker });
     await vi.advanceTimersByTimeAsync(REVALIDATE_DEADLINE_MS);
     const result = await pending;
 
@@ -138,7 +145,7 @@ describe("getArticle", () => {
       async (): Promise<CmsClientResult> => ({ outcome: "timeout", durationMs: 2000 }),
     );
 
-    await getArticle(path, { caller: "read", client });
+    await getArticle(path, { caller: "read", client, breaker });
 
     expect(articleStore().get(path)?.article).toEqual(stale);
   });
@@ -151,7 +158,7 @@ describe("getArticle", () => {
       async (): Promise<CmsClientResult> => ({ outcome: "invalid", durationMs: 5 }),
     );
 
-    const result = await getArticle(path, { caller: "read", client });
+    const result = await getArticle(path, { caller: "read", client, breaker });
 
     expect(result.status).toBe("STALE");
     expect(result.upstreamOutcome).toBe("invalid");
@@ -166,9 +173,9 @@ describe("getArticle", () => {
     );
 
     const results = await Promise.all([
-      getArticle(path, { caller: "read", client }),
-      getArticle(path, { caller: "read", client }),
-      getArticle(path, { caller: "read", client }),
+      getArticle(path, { caller: "read", client, breaker }),
+      getArticle(path, { caller: "read", client, breaker }),
+      getArticle(path, { caller: "read", client, breaker }),
     ]);
 
     expect(client).toHaveBeenCalledTimes(1);
@@ -188,9 +195,9 @@ describe("getArticle", () => {
     );
 
     const results = await Promise.all([
-      getArticle(path, { caller: "read", client }),
-      getArticle(path, { caller: "read", client }),
-      getArticle(path, { caller: "read", client }),
+      getArticle(path, { caller: "read", client, breaker }),
+      getArticle(path, { caller: "read", client, breaker }),
+      getArticle(path, { caller: "read", client, breaker }),
     ]);
 
     expect(client).toHaveBeenCalledTimes(1);
@@ -206,7 +213,7 @@ describe("getArticle", () => {
       async (): Promise<CmsClientResult> => ({ outcome: "http_error", durationMs: 5 }),
     );
 
-    const result = await getArticle(path, { caller: "read", client });
+    const result = await getArticle(path, { caller: "read", client, breaker });
 
     expect(result.status).toBe("UNAVAILABLE");
     expect(result.article).toBeNull();
@@ -219,7 +226,7 @@ describe("getArticle", () => {
     const article = makeArticle(path);
     const { client: hangingClient, resolve } = deferredClient();
 
-    const first = getArticle(path, { caller: "read", client: hangingClient });
+    const first = getArticle(path, { caller: "read", client: hangingClient, breaker });
     resolve({ outcome: "timeout", durationMs: 2000 });
     const firstResult = await first;
 
@@ -228,10 +235,66 @@ describe("getArticle", () => {
     const secondClient = vi.fn(
       async (): Promise<CmsClientResult> => ({ outcome: "ok", article, durationMs: 5 }),
     );
-    const secondResult = await getArticle(path, { caller: "read", client: secondClient });
+    const secondResult = await getArticle(path, { caller: "read", client: secondClient, breaker });
 
     expect(secondClient).toHaveBeenCalledTimes(1);
     expect(secondResult.status).toBe("MISS");
     expect(secondResult.article).toEqual(article);
+  });
+});
+
+describe("getArticle circuit breaker interaction", () => {
+  let breaker: CircuitBreaker;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    breaker = new CircuitBreaker();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("skips the bounded wait and serves stale immediately when the circuit is open", async () => {
+    const path = makePath();
+    const stale = makeArticle(path, 1);
+    seedStale(path, stale);
+    breaker.onFailure();
+    breaker.onFailure();
+    breaker.onFailure();
+    expect(breaker.getState()).toBe("open");
+
+    const client = vi.fn(() => new Promise<CmsClientResult>(() => {}));
+
+    const result = await getArticle(path, { caller: "read", client, breaker });
+
+    expect(result.status).toBe("STALE");
+    expect(result.article).toEqual(stale);
+    expect(client).not.toHaveBeenCalled();
+  });
+
+  it("opens the circuit from real read-path failures, then skips the wait on the next stale read", async () => {
+    const failingClient = vi.fn(
+      async (): Promise<CmsClientResult> => ({ outcome: "http_error", durationMs: 5 }),
+    );
+
+    for (let i = 0; i < 3; i += 1) {
+      const path = makePath();
+      seedStale(path, makeArticle(path, 1));
+      await getArticle(path, { caller: "read", client: failingClient, breaker });
+    }
+
+    expect(breaker.getState()).toBe("open");
+
+    const nextPath = makePath();
+    const stale = makeArticle(nextPath, 1);
+    seedStale(nextPath, stale);
+    const hangingClient = vi.fn(() => new Promise<CmsClientResult>(() => {}));
+
+    const result = await getArticle(nextPath, { caller: "read", client: hangingClient, breaker });
+
+    expect(result.status).toBe("STALE");
+    expect(result.article).toEqual(stale);
+    expect(hangingClient).not.toHaveBeenCalled();
   });
 });
