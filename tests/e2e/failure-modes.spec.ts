@@ -31,21 +31,28 @@ test.describe("failure modes", () => {
     await assertServesArticle(request);
   });
 
-  // Target behavior for later steps: an app-level cache must survive a slow,
-  // down, hanging, or corrupt upstream by serving the last-known-good article.
-  test.fixme("slow", async ({ request }) => {
-    await assertServesArticle(request, "slow");
-  });
-
-  test.fixme("down", async ({ request }) => {
+  // An app-level cache survives a down, hanging, or corrupt upstream by
+  // serving the last-known-good article (warmed by the "healthy" test above).
+  test("down", async ({ request }) => {
     await assertServesArticle(request, "down");
   });
 
-  test.fixme("hang", async ({ request }) => {
+  test("hang", async ({ request }) => {
     await assertServesArticle(request, "hang");
   });
 
-  test.fixme("corrupt", async ({ request }) => {
+  test("corrupt", async ({ request }) => {
     await assertServesArticle(request, "corrupt");
+  });
+
+  // Runs last: the single-flight refresh it triggers is keyed by path only
+  // (not path+source) and keeps running in the background past the 400ms
+  // deadline, so an earlier `slow` run could still be in flight when
+  // down/hang/corrupt fire right after it — they'd join its promise instead
+  // of exercising their own named mode. Every test still passes regardless
+  // (stale-serve is guaranteed either way), but ordering `slow` last lets
+  // each of the others genuinely hit its own upstream mode.
+  test("slow", async ({ request }) => {
+    await assertServesArticle(request, "slow");
   });
 });

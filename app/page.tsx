@@ -4,7 +4,20 @@ import { getArticleIndex } from "@/services/articleService";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const { articles } = await getArticleIndex();
+  const index = await getArticleIndex();
+
+  if (!index) {
+    return (
+      <main className="mx-auto w-full max-w-2xl px-6 py-12">
+        <h1 className="text-2xl font-bold tracking-tight">Latest Articles</h1>
+        <p className="mt-8 text-zinc-600 dark:text-zinc-400">
+          Unable to load articles right now. Please try again shortly.
+        </p>
+      </main>
+    );
+  }
+
+  const { articles } = index;
 
   return (
     <main className="mx-auto w-full max-w-2xl px-6 py-12">

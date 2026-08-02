@@ -1,5 +1,5 @@
 import { validateArticle } from "@/lib/cms/validateArticle";
-import { ArticleData } from "@/types/article";
+import { ArticleData, ArticleIndexData } from "@/types/article";
 
 export const UPSTREAM_TIMEOUT_MS = 2000;
 
@@ -73,6 +73,70 @@ export async function fetchArticle(
     const result = validateArticle(payload, path);
     return result.ok
       ? { outcome: "ok", article: result.article, durationMs: durationMs() }
+      : { outcome: "invalid", durationMs: durationMs() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface CmsIndexClientResult {
+  outcome: CmsOutcome;
+  index?: ArticleIndexData;
+  durationMs: number;
+}
+
+function isValidIndexPayload(payload: unknown): payload is ArticleIndexData {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    Array.isArray((payload as { articles?: unknown }).articles)
+  );
+}
+
+/**
+ * Same choke point as fetchArticle, for the article index. The index route
+ * has no `?source=` failure-mode support (see app/api/cms/content/route.ts),
+ * so there's no structurally-plausible-but-wrong payload to defend against —
+ * a shape check is enough, unlike the per-field validateArticle rules.
+ */
+export async function fetchArticleIndex(
+  // Unused until step 10 instruments call sites by caller.
+  caller: CmsCaller,
+): Promise<CmsIndexClientResult> {
+  const url = new URL(`${CMS_BASE_URL}/content`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const durationMs = () => Date.now() - startedAt;
+
+  try {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch {
+      const outcome: CmsOutcome = controller.signal.aborted
+        ? "timeout"
+        : "http_error";
+      return { outcome, durationMs: durationMs() };
+    }
+
+    if (!response.ok) {
+      return { outcome: "http_error", durationMs: durationMs() };
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return { outcome: "invalid", durationMs: durationMs() };
+    }
+
+    return isValidIndexPayload(payload)
+      ? { outcome: "ok", index: payload, durationMs: durationMs() }
       : { outcome: "invalid", durationMs: durationMs() };
   } finally {
     clearTimeout(timer);

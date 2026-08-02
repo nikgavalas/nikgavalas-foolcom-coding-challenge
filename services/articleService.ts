@@ -1,23 +1,36 @@
+import { getArticle as getCachedArticle } from "@/lib/cache/articleCache";
+import { getArticleIndex as getCachedArticleIndex } from "@/lib/cache/articleIndexCache";
+import { isRecentlyNotFound, markNotFound } from "@/lib/cache/notFoundCache";
 import { ArticleData, ArticleIndexData } from "@/types/article";
 
-const PORT = process.env.PORT ?? "3000";
-const CMS_BASE_URL =
-  process.env.CMS_BASE_URL ?? `http://localhost:${PORT}/api/cms`;
+export interface GetArticleResult {
+  article: ArticleData | null;
+  kind: "ok" | "not_found" | "unavailable";
+}
 
 export async function getArticle(
   path: string,
   source?: string,
-): Promise<ArticleData> {
-  const url = new URL(`${CMS_BASE_URL}/content/${path}`);
-  if (source) url.searchParams.set("source", source);
+): Promise<GetArticleResult> {
+  if (isRecentlyNotFound(path)) {
+    return { article: null, kind: "not_found" };
+  }
 
-  const response = await fetch(url, { cache: "no-store" });
-  return response.json();
+  const result = await getCachedArticle(path, { caller: "read", source });
+
+  if (result.article) {
+    return { article: result.article, kind: "ok" };
+  }
+
+  if (result.upstreamOutcome === "not_found") {
+    markNotFound(path);
+    return { article: null, kind: "not_found" };
+  }
+
+  return { article: null, kind: "unavailable" };
 }
 
-export async function getArticleIndex(): Promise<ArticleIndexData> {
-  const response = await fetch(`${CMS_BASE_URL}/content`, {
-    cache: "no-store",
-  });
-  return response.json();
+export async function getArticleIndex(): Promise<ArticleIndexData | null> {
+  const result = await getCachedArticleIndex({ caller: "read" });
+  return result.index;
 }

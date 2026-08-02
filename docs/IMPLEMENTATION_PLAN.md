@@ -24,7 +24,7 @@ Step 1 comes first so there is a failing acceptance test to build against.
 | 4 | Upstream client | `lib/cms/cmsClient.ts` | ☑ |
 | 5 | Cache policy engine | `lib/cache/articleCache.ts` | ☑ |
 | 6 | Circuit breaker | `lib/cache/circuitBreaker.ts` | ☑ |
-| 7 | Wire into the app | `services/articleService.ts`, `app/articles/` | ☐ |
+| 7 | Wire into the app | `services/articleService.ts`, `app/articles/` | ☑ |
 | 8 | Prewarm + refresher | `instrumentation.ts` | ☐ |
 | 8a | CDN response headers | `next.config.ts` / `middleware.ts` | ☐ |
 | 9 | Push invalidation | `app/api/internal/revalidate/` | ☐ |

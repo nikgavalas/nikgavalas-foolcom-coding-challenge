@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 
 import { getArticle } from "@/services/articleService";
 
@@ -24,7 +25,11 @@ export async function generateMetadata({
   const { slug } = await params;
   const { source } = await searchParams;
 
-  const article = await getArticle(slug.join("/"), source);
+  const { article } = await getArticle(slug.join("/"), source);
+
+  if (!article) {
+    return { title: "The Motley Fool" };
+  }
 
   return {
     title: `${article.headline} | The Motley Fool`,
@@ -36,7 +41,19 @@ export default async function ArticlePage({ params, searchParams }: PageProps) {
   const { slug } = await params;
   const { source } = await searchParams;
 
-  const article = await getArticle(slug.join("/"), source);
+  const { article, kind } = await getArticle(slug.join("/"), source);
+
+  if (!article) {
+    if (kind === "not_found") notFound();
+
+    return (
+      <div className="mx-auto w-full max-w-2xl px-6 py-12">
+        <p className="text-lg text-zinc-600 dark:text-zinc-400">
+          This article is temporarily unavailable. Please try again shortly.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <article className="mx-auto w-full max-w-2xl px-6 py-12">
