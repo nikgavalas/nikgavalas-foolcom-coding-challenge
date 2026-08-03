@@ -29,7 +29,7 @@ Step 1 comes first so there is a failing acceptance test to build against.
 | 8a | CDN response headers | `proxy.ts` | ☑ |
 | 9 | Push invalidation | `app/api/internal/revalidate/` | ☑ |
 | 10 | Observability | `lib/observability/` | ☑ |
-| 11 | Correction e2e | `tests/e2e/` | ☐ |
+| 11 | Correction e2e | `tests/e2e/` | ☑ |
 | 12 | Final docs | `docs/` | ☐ |
 
 ## Parallelization
