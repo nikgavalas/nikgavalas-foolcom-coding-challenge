@@ -1,4 +1,4 @@
-import { getArticle as getCachedArticle } from "@/lib/cache/articleCache";
+import { ArticleCacheStatus, getArticle as getCachedArticle } from "@/lib/cache/articleCache";
 import { getArticleIndex as getCachedArticleIndex } from "@/lib/cache/articleIndexCache";
 import { isRecentlyNotFound, markNotFound } from "@/lib/cache/notFoundCache";
 import { ArticleData, ArticleIndexData } from "@/types/article";
@@ -6,6 +6,8 @@ import { ArticleData, ArticleIndexData } from "@/types/article";
 export interface GetArticleResult {
   article: ArticleData | null;
   kind: "ok" | "not_found" | "unavailable";
+  cacheStatus?: ArticleCacheStatus;
+  ageMs?: number;
 }
 
 export async function getArticle(
@@ -19,7 +21,7 @@ export async function getArticle(
   const result = await getCachedArticle(path, { caller: "read", source });
 
   if (result.article) {
-    return { article: result.article, kind: "ok" };
+    return { article: result.article, kind: "ok", cacheStatus: result.status, ageMs: result.ageMs };
   }
 
   if (result.upstreamOutcome === "not_found") {

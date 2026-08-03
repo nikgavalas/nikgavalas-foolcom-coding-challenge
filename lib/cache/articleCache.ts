@@ -1,6 +1,8 @@
 import { CircuitBreaker, circuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
 import { CmsCaller, CmsClientResult, CmsOutcome, fetchArticle } from "@/lib/cms/cmsClient";
+import { logger } from "@/lib/observability/logger";
+import { metrics } from "@/lib/observability/metrics";
 import { ArticleData } from "@/types/article";
 
 export const FRESH_TTL_MS = 1000;
@@ -44,6 +46,24 @@ export function getWarmArticlePaths(): string[] {
   return getStore().keys();
 }
 
+export interface ArticleCacheSnapshotEntry {
+  path: string;
+  ageMs: number;
+  version: number;
+}
+
+// Read-only, for the cache-stats endpoint — uses peekEntries() so scraping
+// stats never perturbs real LRU order.
+export function getArticleCacheSnapshot(): ArticleCacheSnapshotEntry[] {
+  return getStore()
+    .peekEntries()
+    .map(([path, entry]) => ({
+      path,
+      ageMs: Date.now() - entry.cachedAt,
+      version: entry.article.version,
+    }));
+}
+
 function getOrStartRefresh(
   path: string,
   caller: CmsCaller,
@@ -63,6 +83,10 @@ function getOrStartRefresh(
   if (!breaker.isAllowed()) {
     return Promise.resolve({ outcome: "http_error", durationMs: 0 });
   }
+
+  // Captured before the client call resolves, so it's the version being
+  // replaced, not a version some other concurrent write already changed.
+  const previousEntry = getStore().get(path);
 
   // Call the client synchronously (not via a `.then`-deferred wrapper) so
   // this stays within the same synchronous prefix that the single-flight
@@ -88,6 +112,21 @@ function getOrStartRefresh(
       }
       // Non-negotiable: an entry is overwritten ONLY by an `ok` outcome.
       if (result.outcome === "ok" && result.article) {
+        const oldVersion = previousEntry?.article.version;
+        const newVersion = result.article.version;
+        if (oldVersion !== undefined && oldVersion !== newVersion) {
+          const propagationLagMs = Date.now() - new Date(result.article.updatedAt).getTime();
+          metrics.increment("article_version_changed", { trigger: caller });
+          metrics.histogram("version_propagation_lag_ms", propagationLagMs, { trigger: caller });
+          logger.info("version_changed", {
+            path,
+            oldVersion,
+            newVersion,
+            trigger: caller,
+            propagationLagMs,
+            updatedAt: result.article.updatedAt,
+          });
+        }
         getStore().set(path, { article: result.article, cachedAt: Date.now() });
       }
       return result;
@@ -137,23 +176,38 @@ export async function getArticle(
   const store = getStore();
   const entry = store.get(path);
 
+  function record(result: ArticleCacheResult): ArticleCacheResult {
+    metrics.increment("cache_reads", { status: result.status, caller });
+    metrics.histogram("cache_entry_age_ms", result.ageMs, { status: result.status, caller });
+    logger.info("cache_read", {
+      path,
+      caller,
+      status: result.status,
+      ageMs: result.ageMs,
+      upstreamOutcome: result.upstreamOutcome,
+      circuitState: breaker.getState(),
+      version: result.article?.version,
+    });
+    return result;
+  }
+
   if (!entry) {
     const result = await getOrStartRefresh(path, caller, source, client, breaker);
     if (result.outcome === "ok" && result.article) {
       const stored = store.get(path)!;
-      return {
+      return record({
         article: stored.article,
         status: "MISS",
         ageMs: Date.now() - stored.cachedAt,
         upstreamOutcome: "ok",
-      };
+      });
     }
-    return { article: null, status: "UNAVAILABLE", ageMs: 0, upstreamOutcome: result.outcome };
+    return record({ article: null, status: "UNAVAILABLE", ageMs: 0, upstreamOutcome: result.outcome });
   }
 
   const ageMs = Date.now() - entry.cachedAt;
   if (ageMs < FRESH_TTL_MS) {
-    return { article: entry.article, status: "HIT", ageMs, upstreamOutcome: undefined };
+    return record({ article: entry.article, status: "HIT", ageMs, upstreamOutcome: undefined });
   }
 
   const raced = await withDeadline(
@@ -164,21 +218,21 @@ export async function getArticle(
   if (raced.landed && raced.value.outcome === "ok" && raced.value.article) {
     // Defensive: LRU (CACHE_MAX_ENTRIES) could theoretically evict between write and read.
     const updated = store.get(path) ?? entry;
-    return {
+    return record({
       article: updated.article,
       status: "REVALIDATED",
       ageMs: Date.now() - updated.cachedAt,
       upstreamOutcome: "ok",
-    };
+    });
   }
 
   const current = store.get(path) ?? entry;
-  return {
+  return record({
     article: current.article,
     status: "STALE",
     ageMs: Date.now() - current.cachedAt,
     upstreamOutcome: raced.landed ? raced.value.outcome : undefined,
-  };
+  });
 }
 
 // Push invalidation (step 9): force a stale-and-refresh cycle through the

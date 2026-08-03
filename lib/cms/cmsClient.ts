@@ -1,4 +1,6 @@
 import { validateArticle } from "@/lib/cms/validateArticle";
+import { logger } from "@/lib/observability/logger";
+import { metrics } from "@/lib/observability/metrics";
 import { ArticleData, ArticleIndexData } from "@/types/article";
 
 export const UPSTREAM_TIMEOUT_MS = 2000;
@@ -22,6 +24,28 @@ export interface CmsClientResult {
   durationMs: number;
 }
 
+function recordArticleCall(
+  caller: CmsCaller,
+  path: string,
+  source: string | undefined,
+  result: CmsClientResult,
+): CmsClientResult {
+  metrics.increment("upstream_calls", { outcome: result.outcome, caller });
+  metrics.histogram("upstream_latency_ms", result.durationMs, {
+    outcome: result.outcome,
+    caller,
+  });
+  const log = result.outcome === "ok" || result.outcome === "not_found" ? logger.info : logger.warn;
+  log("upstream_call", {
+    path,
+    caller,
+    outcome: result.outcome,
+    durationMs: result.durationMs,
+    source,
+  });
+  return result;
+}
+
 /**
  * Single choke point for all CMS I/O. Wraps the upstream fetch with a hard
  * timeout (the old services/articleService.ts fetch had none, so `?source=hang`
@@ -30,7 +54,6 @@ export interface CmsClientResult {
  */
 export async function fetchArticle(
   path: string,
-  // Unused until step 10 instruments call sites by caller.
   caller: CmsCaller,
   source?: string,
 ): Promise<CmsClientResult> {
@@ -53,27 +76,32 @@ export async function fetchArticle(
       const outcome: CmsOutcome = controller.signal.aborted
         ? "timeout"
         : "http_error";
-      return { outcome, durationMs: durationMs() };
+      return recordArticleCall(caller, path, source, { outcome, durationMs: durationMs() });
     }
 
     if (response.status === 404) {
-      return { outcome: "not_found", durationMs: durationMs() };
+      return recordArticleCall(caller, path, source, { outcome: "not_found", durationMs: durationMs() });
     }
     if (!response.ok) {
-      return { outcome: "http_error", durationMs: durationMs() };
+      return recordArticleCall(caller, path, source, { outcome: "http_error", durationMs: durationMs() });
     }
 
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      return { outcome: "invalid", durationMs: durationMs() };
+      return recordArticleCall(caller, path, source, { outcome: "invalid", durationMs: durationMs() });
     }
 
     const result = validateArticle(payload, path);
-    return result.ok
-      ? { outcome: "ok", article: result.article, durationMs: durationMs() }
-      : { outcome: "invalid", durationMs: durationMs() };
+    return recordArticleCall(
+      caller,
+      path,
+      source,
+      result.ok
+        ? { outcome: "ok", article: result.article, durationMs: durationMs() }
+        : { outcome: "invalid", durationMs: durationMs() },
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -83,6 +111,17 @@ export interface CmsIndexClientResult {
   outcome: CmsOutcome;
   index?: ArticleIndexData;
   durationMs: number;
+}
+
+function recordIndexCall(caller: CmsCaller, result: CmsIndexClientResult): CmsIndexClientResult {
+  metrics.increment("upstream_calls", { outcome: result.outcome, caller });
+  metrics.histogram("upstream_latency_ms", result.durationMs, {
+    outcome: result.outcome,
+    caller,
+  });
+  const log = result.outcome === "ok" ? logger.info : logger.warn;
+  log("upstream_call", { caller, outcome: result.outcome, durationMs: result.durationMs });
+  return result;
 }
 
 function isValidIndexPayload(payload: unknown): payload is ArticleIndexData {
@@ -100,7 +139,6 @@ function isValidIndexPayload(payload: unknown): payload is ArticleIndexData {
  * a shape check is enough, unlike the per-field validateArticle rules.
  */
 export async function fetchArticleIndex(
-  // Unused until step 10 instruments call sites by caller.
   caller: CmsCaller,
 ): Promise<CmsIndexClientResult> {
   const url = new URL(`${CMS_BASE_URL}/content`);
@@ -121,23 +159,26 @@ export async function fetchArticleIndex(
       const outcome: CmsOutcome = controller.signal.aborted
         ? "timeout"
         : "http_error";
-      return { outcome, durationMs: durationMs() };
+      return recordIndexCall(caller, { outcome, durationMs: durationMs() });
     }
 
     if (!response.ok) {
-      return { outcome: "http_error", durationMs: durationMs() };
+      return recordIndexCall(caller, { outcome: "http_error", durationMs: durationMs() });
     }
 
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      return { outcome: "invalid", durationMs: durationMs() };
+      return recordIndexCall(caller, { outcome: "invalid", durationMs: durationMs() });
     }
 
-    return isValidIndexPayload(payload)
-      ? { outcome: "ok", index: payload, durationMs: durationMs() }
-      : { outcome: "invalid", durationMs: durationMs() };
+    return recordIndexCall(
+      caller,
+      isValidIndexPayload(payload)
+        ? { outcome: "ok", index: payload, durationMs: durationMs() }
+        : { outcome: "invalid", durationMs: durationMs() },
+    );
   } finally {
     clearTimeout(timer);
   }

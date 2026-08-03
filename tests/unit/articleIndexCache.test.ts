@@ -8,6 +8,7 @@ import {
 import { CircuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
 import { CmsIndexClientResult } from "@/lib/cms/cmsClient";
+import { metrics } from "@/lib/observability/metrics";
 import { ArticleIndexData } from "@/types/article";
 
 const INDEX_KEY = "index";
@@ -49,6 +50,7 @@ describe("getArticleIndex", () => {
     // failure-outcome tests would otherwise cumulatively trip it across
     // tests (BREAKER_FAIL_THRESHOLD = 3), making later tests order-dependent.
     breaker = new CircuitBreaker();
+    metrics.reset();
   });
 
   afterEach(() => {
@@ -67,6 +69,7 @@ describe("getArticleIndex", () => {
     expect(result.upstreamOutcome).toBeUndefined();
     expect(result.ageMs).toBeLessThan(FRESH_TTL_MS);
     expect(client).not.toHaveBeenCalled();
+    expect(metrics.getCounter("index_reads", { status: "HIT", caller: "read" })).toBe(1);
   });
 
   it("serves stale when the refresh fails and lands within the deadline", async () => {
@@ -99,6 +102,7 @@ describe("getArticleIndex", () => {
     expect(result.upstreamOutcome).toBe("ok");
     expect(client).toHaveBeenCalledTimes(1);
     expect(indexStore().get(INDEX_KEY)?.index).toEqual(updated);
+    expect(metrics.getCounter("index_reads", { status: "REVALIDATED", caller: "read" })).toBe(1);
   });
 
   it("falls back to STALE when the refresh doesn't land within the deadline, and still updates the cache when it later resolves", async () => {

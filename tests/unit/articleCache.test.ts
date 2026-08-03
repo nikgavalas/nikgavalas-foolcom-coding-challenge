@@ -10,6 +10,7 @@ import {
 import { CircuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
 import { CmsClientResult } from "@/lib/cms/cmsClient";
+import { metrics } from "@/lib/observability/metrics";
 import { ArticleData } from "@/types/article";
 
 let pathCounter = 0;
@@ -62,6 +63,7 @@ describe("getArticle", () => {
     // failure-outcome tests would otherwise cumulatively trip it across
     // tests (BREAKER_FAIL_THRESHOLD = 3), making later tests order-dependent.
     breaker = new CircuitBreaker();
+    metrics.reset();
   });
 
   afterEach(() => {
@@ -81,6 +83,7 @@ describe("getArticle", () => {
     expect(result.upstreamOutcome).toBeUndefined();
     expect(result.ageMs).toBeLessThan(FRESH_TTL_MS);
     expect(client).not.toHaveBeenCalled();
+    expect(metrics.getCounter("cache_reads", { status: "HIT", caller: "read" })).toBe(1);
   });
 
   it("serves stale when the refresh fails and lands within the deadline", async () => {
@@ -115,6 +118,8 @@ describe("getArticle", () => {
     expect(result.upstreamOutcome).toBe("ok");
     expect(client).toHaveBeenCalledTimes(1);
     expect(articleStore().get(path)?.article).toEqual(updated);
+    expect(metrics.getCounter("cache_reads", { status: "REVALIDATED", caller: "read" })).toBe(1);
+    expect(metrics.getCounter("article_version_changed", { trigger: "read" })).toBe(1);
   });
 
   it("falls back to STALE when the refresh doesn't land within the deadline, and still updates the cache when it later resolves", async () => {
@@ -244,12 +249,53 @@ describe("getArticle", () => {
   });
 });
 
+describe("getArticle version_changed", () => {
+  let breaker: CircuitBreaker;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    breaker = new CircuitBreaker();
+    metrics.reset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fires article_version_changed exactly once when the version bumps, and not again when it doesn't", async () => {
+    const path = makePath();
+    const v1 = makeArticle(path, 1);
+    const v2 = makeArticle(path, 2);
+    seedStale(path, v1);
+    const client = vi.fn(
+      async (): Promise<CmsClientResult> => ({ outcome: "ok", article: v2, durationMs: 5 }),
+    );
+
+    await getArticle(path, { caller: "read", client, breaker });
+
+    expect(metrics.getCounter("article_version_changed", { trigger: "read" })).toBe(1);
+    expect(
+      metrics.getHistogramSummary("version_propagation_lag_ms", { trigger: "read" })?.count,
+    ).toBe(1);
+
+    // Advance past the fresh TTL and revalidate again with an unchanged version.
+    await vi.advanceTimersByTimeAsync(FRESH_TTL_MS + 1);
+    const sameVersionClient = vi.fn(
+      async (): Promise<CmsClientResult> => ({ outcome: "ok", article: v2, durationMs: 5 }),
+    );
+    await getArticle(path, { caller: "read", client: sameVersionClient, breaker });
+
+    expect(metrics.getCounter("article_version_changed", { trigger: "read" })).toBe(1);
+  });
+});
+
 describe("getArticle circuit breaker interaction", () => {
   let breaker: CircuitBreaker;
 
   beforeEach(() => {
     vi.useFakeTimers();
     breaker = new CircuitBreaker();
+    metrics.reset();
   });
 
   afterEach(() => {
@@ -306,6 +352,7 @@ describe("revalidatePath", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     breaker = new CircuitBreaker();
+    metrics.reset();
   });
 
   afterEach(() => {
@@ -341,6 +388,7 @@ describe("revalidatePath", () => {
 
     expect(result.article).toEqual(corrected);
     expect(articleStore().get(path)?.article).toEqual(corrected);
+    expect(metrics.getCounter("article_version_changed", { trigger: "push" })).toBe(1);
   });
 
   it("performs a cold fetch for a path that was never cached", async () => {

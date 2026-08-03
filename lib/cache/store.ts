@@ -5,6 +5,10 @@ export interface CacheStore<T> {
   set(key: string, value: T): void;
   delete(key: string): void;
   keys(): string[];
+  // Non-mutating enumeration — unlike get(), this never touches LRU order.
+  // For admin/diagnostics reads (e.g. the cache-stats endpoint) that must not
+  // perturb real cache state as a side effect of merely inspecting it.
+  peekEntries(): Array<[string, T]>;
 }
 
 /**
@@ -40,6 +44,10 @@ export class InMemoryCacheStore<T> implements CacheStore<T> {
 
   keys(): string[] {
     return Array.from(this.entries.keys());
+  }
+
+  peekEntries(): Array<[string, T]> {
+    return Array.from(this.entries.entries());
   }
 }
 

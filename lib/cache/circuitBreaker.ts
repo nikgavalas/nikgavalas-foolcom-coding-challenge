@@ -1,3 +1,6 @@
+import { logger } from "@/lib/observability/logger";
+import { metrics } from "@/lib/observability/metrics";
+
 export const BREAKER_FAIL_THRESHOLD = 3;
 export const BREAKER_COOLDOWN_MS = 5000;
 
@@ -45,18 +48,22 @@ export class CircuitBreaker {
   }
 
   onSuccess(): void {
+    const from = this.getState();
     if (this.state === "open") {
       this.state = "closed";
       this.openedAt = null;
       this.probeInFlight = false;
     }
     this.failureCount = 0;
+    this.recordTransition(from, this.getState());
   }
 
   onFailure(): void {
+    const from = this.getState();
     if (this.state === "open") {
       this.openedAt = Date.now();
       this.probeInFlight = false;
+      this.recordTransition(from, this.getState());
       return;
     }
 
@@ -66,6 +73,14 @@ export class CircuitBreaker {
       this.openedAt = Date.now();
       this.probeInFlight = false;
     }
+    this.recordTransition(from, this.getState());
+  }
+
+  private recordTransition(from: CircuitState, to: CircuitState): void {
+    if (from === to) return;
+    metrics.increment("circuit_transitions", { from, to });
+    const log = to === "open" ? logger.warn : logger.info;
+    log("circuit_transition", { from, to, failureCount: this.failureCount });
   }
 
   private cooldownElapsed(): boolean {

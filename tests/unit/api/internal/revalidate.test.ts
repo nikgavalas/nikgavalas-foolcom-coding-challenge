@@ -10,6 +10,7 @@ vi.mock("@/lib/cache/purgeEdge", () => ({
 
 import { revalidatePath } from "@/lib/cache/articleCache";
 import { purgeEdge } from "@/lib/cache/purgeEdge";
+import { metrics } from "@/lib/observability/metrics";
 import { POST } from "@/app/api/internal/revalidate/route";
 
 const mockRevalidatePath = vi.mocked(revalidatePath);
@@ -32,6 +33,7 @@ describe("POST /api/internal/revalidate", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    metrics.reset();
     process.env.REVALIDATE_SECRET = SECRET;
   });
 
@@ -48,6 +50,7 @@ describe("POST /api/internal/revalidate", () => {
 
     expect(response.status).toBe(401);
     expect(mockRevalidatePath).not.toHaveBeenCalled();
+    expect(metrics.getCounter("revalidate_requests", { status: "unauthorized" })).toBe(1);
   });
 
   it("rejects a request with the wrong secret", async () => {
@@ -71,6 +74,7 @@ describe("POST /api/internal/revalidate", () => {
 
     expect(response.status).toBe(400);
     expect(mockRevalidatePath).not.toHaveBeenCalled();
+    expect(metrics.getCounter("revalidate_requests", { status: "bad_request" })).toBe(1);
   });
 
   it("revalidates through the push caller and purges the edge on success", async () => {
@@ -88,6 +92,7 @@ describe("POST /api/internal/revalidate", () => {
     expect(mockPurgeEdge).toHaveBeenCalledWith("some/path");
     expect(response.status).toBe(200);
     expect(body).toEqual({ path: "some/path", status: "REVALIDATED", version: 2 });
+    expect(metrics.getCounter("revalidate_requests", { status: "REVALIDATED" })).toBe(1);
   });
 
   it("does not purge the edge when the upstream refresh fails", async () => {
