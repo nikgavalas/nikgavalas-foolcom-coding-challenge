@@ -50,7 +50,17 @@ describe("articleService.getArticle single-flight", () => {
     ]);
 
     expect(fetchArticle).toHaveBeenCalledTimes(1);
-    expect(metadataCall).toEqual({ article, kind: "ok" });
-    expect(pageCall).toEqual({ article, kind: "ok" });
+    expect(metadataCall).toEqual({
+      article,
+      kind: "ok",
+      cacheStatus: "MISS",
+      ageMs: expect.any(Number),
+    });
+    expect(pageCall).toEqual({
+      article,
+      kind: "ok",
+      cacheStatus: "MISS",
+      ageMs: expect.any(Number),
+    });
   });
 });

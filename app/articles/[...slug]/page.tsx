@@ -42,7 +42,7 @@ export default async function ArticlePage({ params, searchParams }: PageProps) {
   const { slug } = await params;
   const { source } = await searchParams;
 
-  const { article, kind } = await getArticle(slug.join("/"), source);
+  const { article, kind, cacheStatus, ageMs } = await getArticle(slug.join("/"), source);
 
   if (!article) {
     if (kind === "not_found") notFound();
@@ -57,7 +57,11 @@ export default async function ArticlePage({ params, searchParams }: PageProps) {
   }
 
   return (
-    <article className="mx-auto w-full max-w-2xl px-6 py-12">
+    <article
+      data-cache-status={cacheStatus}
+      data-cache-age={ageMs}
+      className="mx-auto w-full max-w-2xl px-6 py-12"
+    >
       <h1 className="text-3xl font-bold leading-tight tracking-tight">
         {article.headline}
       </h1>

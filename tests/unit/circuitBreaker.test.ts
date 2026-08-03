@@ -5,6 +5,7 @@ import {
   CircuitBreaker,
   circuitBreaker,
 } from "@/lib/cache/circuitBreaker";
+import { metrics } from "@/lib/observability/metrics";
 
 describe("CircuitBreaker", () => {
   let breaker: CircuitBreaker;
@@ -12,6 +13,7 @@ describe("CircuitBreaker", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     breaker = new CircuitBreaker();
+    metrics.reset();
   });
 
   afterEach(() => {
@@ -34,10 +36,13 @@ describe("CircuitBreaker", () => {
   it("opens once the failure threshold is reached", () => {
     breaker.onFailure();
     breaker.onFailure();
+    expect(metrics.getCounter("circuit_transitions", { from: "closed", to: "open" })).toBeUndefined();
+
     breaker.onFailure();
 
     expect(breaker.getState()).toBe("open");
     expect(breaker.isAllowed()).toBe(false);
+    expect(metrics.getCounter("circuit_transitions", { from: "closed", to: "open" })).toBe(1);
   });
 
   it("keeps rejecting until the cooldown elapses", () => {
@@ -82,10 +87,15 @@ describe("CircuitBreaker", () => {
 
     breaker.onSuccess();
     expect(breaker.getState()).toBe("closed");
+    expect(
+      metrics.getCounter("circuit_transitions", { from: "half-open", to: "closed" }),
+    ).toBe(1);
 
     breaker.onFailure();
     breaker.onFailure();
     expect(breaker.getState()).toBe("closed");
+    // Repeated failures below threshold while already closed: no re-emitted transition.
+    expect(metrics.getCounter("circuit_transitions", { from: "closed", to: "closed" })).toBeUndefined();
   });
 
   it("reopens with a fresh cooldown when the probe fails", () => {
@@ -97,6 +107,16 @@ describe("CircuitBreaker", () => {
 
     breaker.onFailure();
     expect(breaker.getState()).toBe("open");
+    expect(
+      metrics.getCounter("circuit_transitions", { from: "half-open", to: "open" }),
+    ).toBe(1);
+
+    // Repeated onFailure() calls while fully open (cooldown not yet elapsed again)
+    // must not re-emit a transition, since from === to === "open" in that window.
+    metrics.reset();
+    breaker.onFailure();
+    expect(metrics.getCounter("circuit_transitions", { from: "open", to: "open" })).toBeUndefined();
+    expect(metrics.snapshotCounters().filter((c) => c.name === "circuit_transitions")).toHaveLength(0);
 
     vi.advanceTimersByTime(BREAKER_COOLDOWN_MS - 1);
     expect(breaker.getState()).toBe("open");

@@ -46,7 +46,7 @@ describe("articleService.getArticle", () => {
 
     const result = await getArticle(path);
 
-    expect(result).toEqual({ article, kind: "ok" });
+    expect(result).toEqual({ article, kind: "ok", cacheStatus: "HIT", ageMs: 0 });
     expect(getCachedArticle).toHaveBeenCalledWith(path, { caller: "read", source: undefined });
   });
 
@@ -63,7 +63,7 @@ describe("articleService.getArticle", () => {
 
     const result = await getArticle(path);
 
-    expect(result).toEqual({ article, kind: "ok" });
+    expect(result).toEqual({ article, kind: "ok", cacheStatus: "STALE", ageMs: 5000 });
   });
 
   it("returns kind not_found on a genuine 404 and negative-caches it", async () => {

@@ -10,6 +10,7 @@ vi.mock("@/lib/cache/articleIndexCache", () => ({
 
 import { getArticle, getWarmArticlePaths } from "@/lib/cache/articleCache";
 import { getArticleIndex } from "@/lib/cache/articleIndexCache";
+import { metrics } from "@/lib/observability/metrics";
 import {
   REFRESH_INTERVAL_MS,
   prewarm,
@@ -31,6 +32,7 @@ const indexEntry = (path: string) => ({
 describe("prewarm", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    metrics.reset();
   });
 
   it("warms every article from the index with caller 'prewarm' and no source", async () => {
@@ -50,6 +52,8 @@ describe("prewarm", () => {
     for (const call of mockGetArticle.mock.calls) {
       expect(call[1]).not.toHaveProperty("source");
     }
+    // Cycle-level, not per-article: exactly one increment regardless of article count.
+    expect(metrics.getCounter("prewarm_runs", { outcome: "ok" })).toBe(1);
   });
 
   it("resolves without throwing when getArticleIndex rejects", async () => {
@@ -87,6 +91,7 @@ describe("prewarm", () => {
 describe("refreshWarmArticles", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    metrics.reset();
     mockGetArticle.mockResolvedValue({ article: null, status: "MISS", ageMs: 0 });
   });
 
@@ -96,6 +101,8 @@ describe("refreshWarmArticles", () => {
     expect(mockGetArticle).toHaveBeenCalledTimes(2);
     expect(mockGetArticle).toHaveBeenCalledWith("a", { caller: "refresher" });
     expect(mockGetArticle).toHaveBeenCalledWith("b", { caller: "refresher" });
+    // Cycle-level, not per-path: exactly one increment regardless of path count.
+    expect(metrics.getCounter("refresh_cycles", { caller: "refresher" })).toBe(1);
   });
 });
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchArticle, fetchArticleIndex, UPSTREAM_TIMEOUT_MS } from "@/lib/cms/cmsClient";
 import { CORRUPT_ARTICLE_PAYLOAD, listArticles } from "@/lib/cmsMock";
+import { metrics } from "@/lib/observability/metrics";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -15,6 +16,7 @@ describe("fetchArticle", () => {
 
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
+    metrics.reset();
   });
 
   afterEach(() => {
@@ -30,6 +32,10 @@ describe("fetchArticle", () => {
     expect(result.outcome).toBe("ok");
     expect(result.article).toEqual(article);
     expect(typeof result.durationMs).toBe("number");
+    expect(metrics.getCounter("upstream_calls", { outcome: "ok", caller: "read" })).toBe(1);
+    expect(
+      metrics.getHistogramSummary("upstream_latency_ms", { outcome: "ok", caller: "read" })?.count,
+    ).toBe(1);
   });
 
   it("returns not_found on a 404", async () => {
@@ -41,6 +47,7 @@ describe("fetchArticle", () => {
 
     expect(result.outcome).toBe("not_found");
     expect(result.article).toBeUndefined();
+    expect(metrics.getCounter("upstream_calls", { outcome: "not_found", caller: "read" })).toBe(1);
   });
 
   it("returns http_error on a 500", async () => {
@@ -52,6 +59,7 @@ describe("fetchArticle", () => {
 
     expect(result.outcome).toBe("http_error");
     expect(result.article).toBeUndefined();
+    expect(metrics.getCounter("upstream_calls", { outcome: "http_error", caller: "read" })).toBe(1);
   });
 
   it("returns invalid on a structurally corrupt payload", async () => {
@@ -61,6 +69,7 @@ describe("fetchArticle", () => {
 
     expect(result.outcome).toBe("invalid");
     expect(result.article).toBeUndefined();
+    expect(metrics.getCounter("upstream_calls", { outcome: "invalid", caller: "read" })).toBe(1);
   });
 
   it("aborts and reports timeout when the upstream hangs past UPSTREAM_TIMEOUT_MS", async () => {
@@ -83,6 +92,16 @@ describe("fetchArticle", () => {
 
     expect(result.outcome).toBe("timeout");
     expect(capturedSignal?.aborted).toBe(true);
+    expect(metrics.getCounter("upstream_calls", { outcome: "timeout", caller: "read" })).toBe(1);
+  });
+
+  it("tags a distinct caller as an independent metric series", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(article));
+
+    await fetchArticle(article.path, "refresher");
+
+    expect(metrics.getCounter("upstream_calls", { outcome: "ok", caller: "refresher" })).toBe(1);
+    expect(metrics.getCounter("upstream_calls", { outcome: "ok", caller: "read" })).toBeUndefined();
   });
 
   it("forwards the source query param when provided, and omits it otherwise", async () => {

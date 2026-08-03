@@ -32,6 +32,24 @@ describe("InMemoryCacheStore", () => {
     expect(store.keys()).toEqual(["c", "d", "a"]);
   });
 
+  it("peekEntries() enumerates without perturbing LRU order", () => {
+    const store = new InMemoryCacheStore<string>(3);
+    store.set("a", "1");
+    store.set("b", "2");
+    store.set("c", "3");
+
+    expect(store.peekEntries()).toEqual([
+      ["a", "1"],
+      ["b", "2"],
+      ["c", "3"],
+    ]);
+
+    // "a" is still the oldest — peeking must not have promoted it like get() would.
+    store.set("d", "4");
+    expect(store.get("a")).toBeUndefined();
+    expect(store.keys()).toEqual(["b", "c", "d"]);
+  });
+
   it("deletes entries", () => {
     const store = new InMemoryCacheStore<string>();
     store.set("a", "1");

@@ -2,6 +2,8 @@ import { FRESH_TTL_MS, REVALIDATE_DEADLINE_MS } from "@/lib/cache/articleCache";
 import { CircuitBreaker, circuitBreaker } from "@/lib/cache/circuitBreaker";
 import { getCacheStore } from "@/lib/cache/store";
 import { CmsCaller, CmsIndexClientResult, CmsOutcome, fetchArticleIndex } from "@/lib/cms/cmsClient";
+import { logger } from "@/lib/observability/logger";
+import { metrics } from "@/lib/observability/metrics";
 import { ArticleIndexData } from "@/types/article";
 
 const NAMESPACE = "article-index";
@@ -88,6 +90,23 @@ async function withDeadline<T>(
   return result;
 }
 
+export interface ArticleIndexCacheSnapshot {
+  present: boolean;
+  ageMs: number | null;
+  articleCount: number | null;
+}
+
+// Read-only, for the cache-stats endpoint — uses peekEntries() so scraping
+// stats never perturbs real LRU order.
+export function getArticleIndexCacheSnapshot(): ArticleIndexCacheSnapshot {
+  const entry = getStore()
+    .peekEntries()
+    .find(([key]) => key === INDEX_KEY)?.[1];
+  return entry
+    ? { present: true, ageMs: Date.now() - entry.cachedAt, articleCount: entry.index.articles.length }
+    : { present: false, ageMs: null, articleCount: null };
+}
+
 export async function getArticleIndex(options: {
   caller: CmsCaller;
   client?: CmsIndexClientFn;
@@ -97,23 +116,36 @@ export async function getArticleIndex(options: {
   const store = getStore();
   const entry = store.get(INDEX_KEY);
 
+  function record(result: ArticleIndexCacheResult): ArticleIndexCacheResult {
+    metrics.increment("index_reads", { status: result.status, caller });
+    metrics.histogram("index_entry_age_ms", result.ageMs, { status: result.status, caller });
+    logger.info("index_read", {
+      caller,
+      status: result.status,
+      ageMs: result.ageMs,
+      upstreamOutcome: result.upstreamOutcome,
+      circuitState: breaker.getState(),
+    });
+    return result;
+  }
+
   if (!entry) {
     const result = await getOrStartRefresh(caller, client, breaker);
     if (result.outcome === "ok" && result.index) {
       const stored = store.get(INDEX_KEY)!;
-      return {
+      return record({
         index: stored.index,
         status: "MISS",
         ageMs: Date.now() - stored.cachedAt,
         upstreamOutcome: "ok",
-      };
+      });
     }
-    return { index: null, status: "UNAVAILABLE", ageMs: 0, upstreamOutcome: result.outcome };
+    return record({ index: null, status: "UNAVAILABLE", ageMs: 0, upstreamOutcome: result.outcome });
   }
 
   const ageMs = Date.now() - entry.cachedAt;
   if (ageMs < FRESH_TTL_MS) {
-    return { index: entry.index, status: "HIT", ageMs, upstreamOutcome: undefined };
+    return record({ index: entry.index, status: "HIT", ageMs, upstreamOutcome: undefined });
   }
 
   const raced = await withDeadline(
@@ -123,19 +155,19 @@ export async function getArticleIndex(options: {
 
   if (raced.landed && raced.value.outcome === "ok" && raced.value.index) {
     const updated = store.get(INDEX_KEY) ?? entry;
-    return {
+    return record({
       index: updated.index,
       status: "REVALIDATED",
       ageMs: Date.now() - updated.cachedAt,
       upstreamOutcome: "ok",
-    };
+    });
   }
 
   const current = store.get(INDEX_KEY) ?? entry;
-  return {
+  return record({
     index: current.index,
     status: "STALE",
     ageMs: Date.now() - current.cachedAt,
     upstreamOutcome: raced.landed ? raced.value.outcome : undefined,
-  };
+  });
 }
