@@ -254,13 +254,48 @@ for h in json.load(sys.stdin)["metrics"]["histograms"]:
 
 cmd_trip() {
   require_server
-  echo "==> six failing reads"
-  local i
-  for ((i = 0; i < 6; i++)); do peek_once down > /dev/null; done
-  echo -n "breaker: "
-  curl -s "$STATS_URL" | json_get circuitBreaker.state
-  echo "(usually already closed — the background refresher talks to the real CMS"
-  echo " and heals it. \`./scripts/demo.sh logs breaker\` shows the transitions.)"
+
+  # The breaker opens on three CONSECUTIVE failures, and any success resets the
+  # count. The refresher succeeds against the real CMS every
+  # REFRESH_INTERVAL_MS, so failures spread over seconds get their counter
+  # wiped mid-run. Two things make this land reliably:
+  #   - distinct paths, because single-flight collapses concurrent reads of the
+  #     SAME path into one upstream call, i.e. one failure instead of three
+  #   - concurrent, so every failure lands inside one refresher gap
+  local paths
+  paths="$(curl -s "$BASE/api/cms/content" | python3 -c '
+import json, sys
+for article in json.load(sys.stdin)["articles"]:
+    print(article["path"])
+')"
+  [[ -n "$paths" ]] || die "could not list articles from $BASE/api/cms/content"
+
+  echo "==> concurrent failing reads, one per seeded article"
+  local attempt path state=""
+  for attempt in 1 2 3 4 5 6; do
+    for path in $paths; do
+      curl -s -o /dev/null --max-time 30 "$BASE/articles/$path?source=down" &
+    done
+    wait
+    state="$(curl -s "$STATS_URL" | json_get circuitBreaker.state)"
+    [[ "$state" == "open" ]] && break
+    # A round can score zero failures: if the refresher revalidated everything
+    # a moment ago, every entry is still inside the 1s fresh window, so those
+    # reads were HITs that never called upstream. Wait out FRESH_TTL_MS and go
+    # again rather than reporting a state the reads never had a chance to set.
+    sleep 1.1
+  done
+
+  echo "breaker: $state  (round $attempt)"
+  if [[ "$state" == "open" ]]; then
+    echo "(open for BREAKER_COOLDOWN_MS = 5s — nothing can close it early, not even"
+    echo " the refresher, so a poll inside that window always catches it.)"
+  else
+    echo "(never reached three consecutive failures: the refresher talks to the real"
+    echo " CMS every REFRESH_INTERVAL_MS and every success resets the count. Restart"
+    echo " with REFRESH_INTERVAL_MS=60000 to widen the gap.)"
+  fi
+  echo "\`./scripts/demo.sh logs breaker\` shows every transition."
 }
 
 cmd_headers() {

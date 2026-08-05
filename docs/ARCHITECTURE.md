@@ -579,10 +579,21 @@ article doesn't exist" from "we can't reach the CMS to ask." We answer 503 (`no-
 next request after the circuit closes gets a real 404. Observed live — the `cache_read` log
 line shows `circuitState: "open"` alongside `status: "UNAVAILABLE"` for that request.
 
-**The breaker rarely stays open in the demo.** `?source=down` failures do trip it (3 in a row),
-but the refresher succeeds every 2s and resets the counter, and its first post-cooldown probe
-closes the circuit again. So we'll see `closed → open` transitions in the logs far more often
-than we'll catch `open` in a stats poll. That's the self-healing working, not a bug.
+**The breaker is hard to *trip* by hand, but easy to catch once tripped.** The threshold is 3
+*consecutive* failures, and any success resets the count to zero — including the refresher's,
+which lands for every warm path every `REFRESH_INTERVAL_MS`. So failures spread over a few
+seconds tend to never reach 3. Two things get around that, both used by
+`./scripts/demo.sh trip`: send the failures concurrently across *different* paths (same-path
+concurrency collapses into one call via single-flight, scoring one failure instead of several),
+and retry, because a round scores nothing if the refresher just revalidated everything and the
+reads are all `HIT`s inside the fresh window. Raising `REFRESH_INTERVAL_MS` removes the
+interference entirely.
+
+Once it *is* open, though, it stays open for the full `BREAKER_COOLDOWN_MS` — `isAllowed()`
+refuses everyone, and only a caller that got permission can report a success, so not even the
+refresher can close it early. A poll inside that 5s window always catches `open`. What the
+refresher does own is the *recovery*: its first post-cooldown probe closes the circuit with no
+user request involved.
 
 **One modification to the CMS mock.** [app/api/cms/admin/route.ts](../app/api/cms/admin/route.ts)
 gained a fire-and-forget webhook call after `publishCorrection`, gated on `CMS_WEBHOOK_URL`.
@@ -603,13 +614,24 @@ rather than left to be discovered.
 | `UPSTREAM_TIMEOUT_MS` 2000 | cmsClient | Socket safety, not user latency |
 | `BREAKER_FAIL_THRESHOLD` 3 | circuitBreaker | Enough to ignore a single blip |
 | `BREAKER_COOLDOWN_MS` 5000 | circuitBreaker | How long we stop asking a dead CMS |
-| `REFRESH_INTERVAL_MS` 2000 | instrumentation | Upper bound on correction lag with no webhook |
+| `REFRESH_INTERVAL_MS` 2000 | instrumentation | Upper bound on correction lag with no webhook. The one env-overridable constant — see below |
 | `NOT_FOUND_TTL_MS` 30000 | notFoundCache | Short — a new article shouldn't stay 404 for long |
 | `CACHE_MAX_ENTRIES` 500 | store | LRU bound so memory can't grow without limit |
 
 **Environment:** `REVALIDATE_SECRET` (required for push; missing means deny-by-default, not
-"auth off"), `CMS_WEBHOOK_URL` (enables push at all), `PORT`, `CMS_BASE_URL`. All four are
+"auth off"), `CMS_WEBHOOK_URL` (enables push at all), `PORT`, `CMS_BASE_URL`, and
+`REFRESH_INTERVAL_MS` (overrides the refresher tick; a bad value falls back to 2000 rather than
+failing to boot — a typo in the environment must not stop the server starting). All five are
 documented in [.env.example](../.env.example), which is what the demo runbook loads.
+
+**One shared-state rule.** Anything that must be a true per-process singleton lives on
+`globalThis`, not in module scope: the [Store](../lib/cache/store.ts), the
+[metrics registry](../lib/observability/metrics.ts), and the
+[Breaker](../lib/cache/circuitBreaker.ts). Module scope is not enough, because Next bundles
+route handlers separately from pages — a plain `new CircuitBreaker()` gets instantiated more
+than once per process, and the copies drift. The symptom is subtle and worth recognising: the
+read path trips and serves `STALE` while `/api/_internal/cache-stats` cheerfully reports
+`closed`, because the endpoint is holding a different instance than the one gating reads.
 
 **Diagnostics:** `GET /api/_internal/cache-stats` returns circuit state, entry count, max entry
 age, per-key age and version, and all counters and histograms. No upstream I/O, so it's safe

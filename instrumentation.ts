@@ -4,7 +4,24 @@ import { CmsCaller } from "@/lib/cms/cmsClient";
 import { logger } from "@/lib/observability/logger";
 import { metrics } from "@/lib/observability/metrics";
 
-export const REFRESH_INTERVAL_MS = 2000;
+const DEFAULT_REFRESH_INTERVAL_MS = 2000;
+
+/**
+ * Overridable via env so the breaker demo can widen the gap between ticks.
+ * Each tick succeeds against the real CMS and every success resets the
+ * consecutive-failure count (circuitBreaker.onSuccess), so at the 2s default
+ * three-failures-in-a-row is hard to land by hand — see MANUAL_TESTING.md
+ * Test 4. A bad value falls back to the default rather than throwing: a typo
+ * in the environment must not stop the server from booting.
+ */
+function resolveRefreshIntervalMs(): number {
+  const raw = process.env.REFRESH_INTERVAL_MS;
+  if (!raw) return DEFAULT_REFRESH_INTERVAL_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REFRESH_INTERVAL_MS;
+}
+
+export const REFRESH_INTERVAL_MS = resolveRefreshIntervalMs();
 
 /**
  * Fetches the CMS index and warms the article cache for everything it lists,

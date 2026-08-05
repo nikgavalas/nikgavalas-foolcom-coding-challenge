@@ -231,18 +231,45 @@ background, and its result lands for the next reader — which is why the *follo
 ```
 
 ```
-==> six failing reads
-breaker: closed
+==> concurrent failing reads, one per seeded article
+breaker: open  (round 1)
 ```
 
-**What you're looking for:** `closed` — and yes, that's the expected result, which is the point of
-this test.
+**What you're looking for:** `open`. Once three consecutive failures trip it, nothing can close
+it for the full `BREAKER_COOLDOWN_MS` — `isAllowed()` refuses every caller, and only a caller
+that got permission can report a success. So a poll inside that 5s window always catches it.
 
-**What it proves:** three consecutive failures do open the circuit for 5s, but the background
-refresher never sends `?source=`, so it talks to the *real* CMS, succeeds every 2s, resets the
-failure count, and closes the circuit on its first post-cooldown probe. By the time the command
-polls, it's already recovered. The state you're chasing lives in the transition log, not the
-gauge:
+Then wait out the cooldown and look again:
+
+```bash
+sleep 9 && ./scripts/demo.sh breaker
+```
+
+```
+closed
+```
+
+> Poll closer to the 5s mark and the answer is often `half-open`: the cooldown has elapsed, so
+> the next caller will be let through as a probe, but nobody has been through yet. The 9s allows
+> for the cooldown *plus* the up-to-2s wait for the next refresher tick.
+
+**What it proves:** the system heals with no user request involved. The background refresher
+never sends `?source=`, so it talks to the *real* CMS; its first post-cooldown probe succeeds and
+closes the circuit. Between the two commands above, nothing but the refresher ran.
+
+Two details in `trip` are there because getting three *consecutive* failures by hand is harder
+than it sounds, and both are worth understanding:
+
+- **It hits a different article per request.** Concurrent reads of the *same* path collapse into
+  one upstream call via single-flight, which would score one failure, not four.
+- **It retries up to six rounds.** Any success resets the failure count to zero
+  ([circuitBreaker.ts:57](../lib/cache/circuitBreaker.ts#L57)), and a round scores nothing at all
+  if the refresher revalidated everything a moment earlier — those entries are still inside the
+  1s fresh window, so the reads are `HIT`s that never touch the CMS. If it still reports `closed`
+  after six rounds, restart the server with `REFRESH_INTERVAL_MS=60000` to widen the gap between
+  refresher ticks.
+
+Every transition is in the log either way:
 
 ```bash
 ./scripts/demo.sh logs breaker

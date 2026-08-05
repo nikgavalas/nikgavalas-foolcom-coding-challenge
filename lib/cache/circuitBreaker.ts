@@ -88,4 +88,25 @@ export class CircuitBreaker {
   }
 }
 
-export const circuitBreaker = new CircuitBreaker();
+// Same reasoning as lib/cache/store.ts and lib/observability/metrics.ts, and
+// for a second reason those two don't have: Next bundles route handlers
+// separately from pages, so a plain module-level `new CircuitBreaker()` is
+// instantiated more than once per process. The copies then drift — the read
+// path can be tripped and open while /api/_internal/cache-stats reports
+// `closed`, because it is holding a different instance. One breaker per
+// process is the whole point: the state is a health signal about one upstream.
+const GLOBAL_BREAKER_KEY = "__foolcom_circuit_breaker__";
+
+type GlobalWithBreaker = typeof globalThis & {
+  [GLOBAL_BREAKER_KEY]?: CircuitBreaker;
+};
+
+function getSharedBreaker(): CircuitBreaker {
+  const g = globalThis as GlobalWithBreaker;
+  if (!g[GLOBAL_BREAKER_KEY]) {
+    g[GLOBAL_BREAKER_KEY] = new CircuitBreaker();
+  }
+  return g[GLOBAL_BREAKER_KEY];
+}
+
+export const circuitBreaker = getSharedBreaker();
