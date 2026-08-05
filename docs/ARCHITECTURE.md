@@ -236,8 +236,8 @@ The refresh beat the 400ms deadline, so this reader gets the *new* content, not 
 
 ### Slow upstream — three different endings
 
-You asked which ways "slow" can go. It's these three, and which one you get depends entirely
-on the state of the cache entry and the breaker.
+A slow upstream resolves in one of three ways, and which one depends entirely on the state of
+the cache entry and the breaker.
 
 #### 4. Slow, but the entry is fresh
 
@@ -426,7 +426,7 @@ Two details worth defending:
   deleting would destroy the only good copy we have and turn a merely-stale page into an
   unavailable one. Mark-and-try preserves the fallback.
 - **The edge is purged only *after* the origin refresh succeeds.** Purge first, and the CDN
-  immediately re-fetches from an origin that still has the old version — and re-caches it. You'd
+  immediately re-fetches from an origin that still has the old version — and re-caches it. We'd
   need a second purge to land the correction.
 
 The webhook call from the admin route is fire-and-forget and error-swallowed, so a slow or
@@ -581,8 +581,8 @@ line shows `circuitState: "open"` alongside `status: "UNAVAILABLE"` for that req
 
 **The breaker rarely stays open in the demo.** `?source=down` failures do trip it (3 in a row),
 but the refresher succeeds every 2s and resets the counter, and its first post-cooldown probe
-closes the circuit again. So you'll see `closed → open` transitions in the logs far more often
-than you'll catch `open` in a stats poll. That's the self-healing working, not a bug.
+closes the circuit again. So we'll see `closed → open` transitions in the logs far more often
+than we'll catch `open` in a stats poll. That's the self-healing working, not a bug.
 
 **One modification to the CMS mock.** [app/api/cms/admin/route.ts](../app/api/cms/admin/route.ts)
 gained a fire-and-forget webhook call after `publishCorrection`, gated on `CMS_WEBHOOK_URL`.
