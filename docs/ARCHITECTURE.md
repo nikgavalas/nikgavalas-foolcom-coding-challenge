@@ -54,9 +54,16 @@ genuine 404 is a *real answer* about a non-existent article, and it proves the C
 
 ---
 
-## The master flowchart
+## The master flowcharts
 
-Everything below is a traversal of this one diagram. It's worth reading once slowly.
+Everything below is a traversal of these two diagrams. They're worth reading once slowly.
+
+They're split the way the code is. The read path decides *whether* to call upstream and *how
+long to wait*; `getOrStartRefresh` owns *the call itself*. Drawing the refresh as a single
+called node in the first diagram, expanded in the second, is what makes the system's central
+claim visible: **there is exactly one route to the CMS, and the validator sits on it.**
+
+### 1. The read path — deciding what to serve
 
 ```mermaid
 flowchart TD
@@ -67,38 +74,98 @@ flowchart TD
     NEG -->|no| LOOKUP[Policy engine:<br/>look up path in Store]
 
     LOOKUP --> BRANCH{Entry state?}
-    BRANCH -->|no entry| COLD[Cold: await the fetch<br/>up to 2s]
     BRANCH -->|age &lt; 1s| HIT[["HIT — serve now,<br/>no upstream call"]]
-    BRANCH -->|age ≥ 1s| STALE_PATH[Stale: start or join<br/>a single-flight refresh]
+    BRANCH -->|no entry| COLD[Cold: await the<br/>refresh fully, up to 2s]
+    BRANCH -->|age ≥ 1s| STALE_PATH[Stale: await the refresh,<br/>but only for 400ms]
 
-    STALE_PATH --> DEADLINE{Landed within<br/>400ms?}
-    DEADLINE -->|yes, ok| REVAL[["REVALIDATED"]]
-    DEADLINE -->|no, or not ok| SERVE_STALE[["STALE — serve the old copy"]]
+    COLD --> REFRESH
+    STALE_PATH --> REFRESH[["REFRESH<br/>expanded in diagram 2 —<br/>the only route to the CMS"]]
 
-    COLD --> GATE
-    STALE_PATH --> GATE{Breaker allows<br/>a call?}
-    GATE -->|open| SKIP[Skip the call entirely]
-    SKIP --> SERVE_STALE
-    GATE -->|closed / half-open| FETCH[Client: fetch with<br/>2s AbortController]
+    REFRESH -->|cold caller| COLDRES{Outcome}
+    REFRESH -->|stale caller| DEADLINE{Outcome ok, and<br/>landed within 400ms?}
 
-    FETCH --> VALID[Validator]
-    VALID --> OUTCOME{Outcome}
-    OUTCOME -->|ok| WRITE[Write to Store<br/>+ breaker success]
-    OUTCOME -->|not_found| NFOUND[Breaker success<br/>no write]
-    OUTCOME -->|timeout / http_error / invalid| FAIL[Breaker failure<br/>ENTRY LEFT UNTOUCHED]
+    COLDRES -->|ok| MISS[["MISS — serve the new copy"]]
+    COLDRES -->|not_found| NEGMARK[Service: mark 404 for 30s]
+    COLDRES -->|timeout / http_error / invalid| UNAVAIL[["UNAVAILABLE"]]
 
-    COLD --> COLDRES{Got an article?}
-    COLDRES -->|yes| MISS[["MISS — serve it"]]
-    COLDRES -->|no| UNAVAIL[["UNAVAILABLE"]]
+    DEADLINE -->|yes| REVAL[["REVALIDATED — serve the new copy"]]
+    DEADLINE -->|no| SERVE_STALE[["STALE — serve the old copy"]]
 
+    NEGMARK --> N404
     UNAVAIL --> P503[Proxy: 503 + no-store]
-    NFOUND --> N404
 
     HIT --> RENDER([Render article])
     REVAL --> RENDER
     SERVE_STALE --> RENDER
     MISS --> RENDER
+
+    style REFRESH stroke-width:3px
 ```
+
+The two edges out of `REFRESH` are not a branch in the refresh — it's one function with one
+return value. They're the two ways a *caller* can await it, and that difference is the entire
+distinction between the cold and stale paths:
+
+- **Cold** awaits it fully ([articleCache.ts:195](../lib/cache/articleCache.ts#L195)). There's
+  nothing to fall back on, so waiting the full 2s beats serving nothing.
+- **Stale** wraps it in `withDeadline(…, 400ms)`
+  ([articleCache.ts:213](../lib/cache/articleCache.ts#L213)). Losing the race isn't a failure —
+  the refresh keeps running and its result lands for the next reader.
+
+Note what `DEADLINE` requires: **`ok` *and* in time.** Beating 400ms earns nothing if the payload
+didn't validate. A fast corrupt response is treated exactly like a slow one — `STALE`, cache
+untouched.
+
+### 2. `getOrStartRefresh` — the only route to the CMS
+
+Called from all five callers: cold reads, stale reads, prewarm, the background refresher, and
+push invalidation. Every one of them gets the same breaker check, the same validator, and the
+same overwrite rule.
+
+```mermaid
+flowchart TD
+    IN([Caller: read, prewarm,<br/>refresher, or push]) --> JOIN{Already in flight<br/>for this path?}
+    JOIN -->|yes| SHARE[Join the existing promise.<br/>No breaker check — not a new call]
+    JOIN -->|no| GATE{Breaker allows<br/>a call?}
+    GATE -->|open| SKIP[Skip the call.<br/>Resolves instantly as http_error]
+    GATE -->|closed / half-open| FETCH[Client: fetch with<br/>2s AbortController]
+
+    FETCH --> HTTP{HTTP result}
+    HTTP -->|404| NF[not_found]
+    HTTP -->|other non-2xx| HE[http_error]
+    HTTP -->|abort / network| TO[timeout]
+    HTTP -->|2xx| PARSE{JSON parses?}
+    PARSE -->|no| INV[invalid]
+    PARSE -->|yes| VALID[["Validator<br/>the only gate that can<br/>admit new data"]]
+    VALID -->|fails| INV
+    VALID -->|passes| OK[ok]
+
+    OK --> WRITE[Write to Store<br/>+ breaker success]
+    NF --> NFOK[Breaker success, no write<br/>the CMS answered, it just said no]
+    HE --> FAIL[Breaker failure<br/>ENTRY LEFT UNTOUCHED]
+    TO --> FAIL
+    INV --> FAIL
+
+    WRITE --> OUT([Return the outcome])
+    NFOK --> OUT
+    FAIL --> OUT
+    SKIP --> OUT
+    SHARE --> OUT
+
+    style VALID stroke-width:3px
+```
+
+Read the graph for what it *can't* express: the only edge into `Write to Store` comes from `ok`,
+and the only edge into `ok` comes from the validator. That's the invariant from the top of this
+document, drawn rather than asserted — no path exists by which unvalidated data reaches the
+Store, regardless of which caller started the call or how fast the response arrived.
+
+Two shortcuts worth naming, since both let a caller reach `Return the outcome` without touching
+the network. `Skip` is the open breaker resolving instantly as a failure
+([articleCache.ts:84](../lib/cache/articleCache.ts#L84)) — that's why a stale read against a dead
+CMS returns in ~1ms instead of burning the full 400ms. `Join` is single-flight
+([articleCache.ts:75](../lib/cache/articleCache.ts#L75)), and it deliberately sits *above* the
+breaker check: a joiner isn't starting a call, so it has nothing to gate.
 
 The five terminal statuses — `HIT`, `REVALIDATED`, `STALE`, `MISS`, `UNAVAILABLE` — are
 visible in the page's `data-cache-status` attribute, which is how the e2e tests assert on
@@ -291,11 +358,20 @@ Nothing in the cache, and the CMS won't answer. The only case where we have noth
 
 ```mermaid
 flowchart LR
-    A[No entry] --> B[Fetch fails]
-    B --> C[UNAVAILABLE]
-    C --> D[Service: kind = unavailable]
-    D --> E[Proxy: 503 + Cache-Control: no-store]
+    A[No entry] --> B{Breaker open?}
+    B -->|no| C[Fetch fails]
+    B -->|yes| D[No call made at all]
+    C --> E[UNAVAILABLE]
+    D --> E
+    E --> F[Service: kind = unavailable]
+    F --> G[Proxy: 503 + Cache-Control: no-store]
 ```
+
+Both branches matter. Once the breaker is open we don't even try, so a cold request during an
+outage costs ~1ms instead of 2s — but the answer is still `UNAVAILABLE`, because an open breaker
+tells us nothing about whether this article exists. That's the case described under
+[Known interactions](#known-interactions): a genuine 404 during an open circuit renders as a
+503, and it's the right answer precisely because we can't distinguish the two.
 
 Two deliberate choices here. It's a **503, not a 200** — a 200 would be cached at the edge and
 the outage served to every reader for the full TTL. And `no-store` guarantees nothing, at any
