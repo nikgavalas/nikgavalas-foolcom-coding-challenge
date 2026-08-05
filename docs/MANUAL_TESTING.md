@@ -1,11 +1,14 @@
-# Manual testing & live demo runbook
+# Manual testing guide
 
-A script for driving the system by hand and watching each piece work. Every command below was
-run against a real server and the outputs are the ones actually observed — if you get
-something different, that's a signal, not a typo.
+This is a hands-on walkthrough for verifying the caching layer yourself. Eleven tests, each one
+command, each with the output you should expect and an explanation of what it proves.
 
-Pair this with [ARCHITECTURE.md](ARCHITECTURE.md); the exercises are numbered to match its
-scenarios where they line up.
+Every output below was captured from a real run. If you get something materially different,
+that's a signal worth chasing, not a typo in this file. Timings will vary with your machine;
+the *shape* of the result — cache status, version, order of magnitude — is what matters.
+
+Each test names the [ARCHITECTURE.md](ARCHITECTURE.md) scenario it exercises, if you want the
+design rationale behind what you're seeing.
 
 ---
 
@@ -24,26 +27,25 @@ In the second:
 ./scripts/demo.sh help
 ```
 
-That's the whole setup. Every exercise below is one command from that help output.
+That's the whole setup. Every test below is one command from that help output.
 
 **Config** lives in [.env.example](../.env.example), which documents all four env vars and holds
 no secrets. `cp .env.example .env` if you want to change something; the script falls back to the
-same values, so the demo works with no `.env` at all. Any var can be overridden inline
+same values, so this works with no `.env` at all. Any var can be overridden inline
 (`PORT=3005 ./scripts/demo.sh peek`), and `--no-webhook` is a global flag that points any command
-at the second server used in Exercise 9.
+at the second server used in Test 9.
 
-Two things worth knowing about the setup, because they're both talking points:
+Two things about the setup that affect what you'll see:
 
 - `npm run demo` sets `REVALIDATE_SECRET` and derives `CMS_WEBHOOK_URL` from `PORT`. Without
-  both, push invalidation is off — deny-by-default, not "auth disabled" — and you'd be demoing
-  the refresher instead. That's Exercise 9, on purpose.
+  both, push invalidation is off — deny-by-default, not "auth disabled" — and corrections would
+  arrive via the background refresher instead. That's Test 9, deliberately isolated.
 - It always serves a **production build**. Dev-mode timing (on-demand compilation, no
-  minification) is not representative of the latency behavior on show here.
+  minification) would not be representative of the latency behavior under test.
 
 ### The four seeded articles
 
-All four are prewarmed at boot. The script drives the first one by default; `./scripts/demo.sh
-articles` lists them all.
+All four are prewarmed at boot. The script drives the first one by default.
 
 ```bash
 ./scripts/demo.sh articles
@@ -56,17 +58,19 @@ articles` lists them all.
   investing/2026/07/22/this-stock-is-crushing-both-lucid-and-rivian-in
 ```
 
-### The browser toolbar
+### Testing in the browser instead
 
 Open `http://localhost:3000`, then any article. A floating toolbar at the bottom gives you the
-five failure modes as links and a **publish correction** button. It's the fastest way to demo
-live — the commands below are the same thing, with the numbers visible.
+five failure modes as links and a **publish correction** button. It drives the same code paths as
+the commands below — use it if you'd rather click than type. Inspect the `<article>` element to
+see the cache status the commands print.
 
 ---
 
-## Exercise 0 — Prewarm filled the cache before you asked for anything
+## Test 0 — The cache is warm before the first request (scenario 2)
 
-Do this **first**, before any page request. It's the most easily missed piece.
+**Run this first, before requesting any page.** It's the easiest piece to miss, because by the
+time you look at anything else the evidence is gone.
 
 ```bash
 ./scripts/demo.sh stats
@@ -81,9 +85,13 @@ Do this **first**, before any page request. It's the most easily missed piece.
 }
 ```
 
-**Say:** four articles cached, and nobody has visited the site yet. `instrumentation.ts` fetched
-the CMS index at boot and warmed every article. It's fire-and-forget, so a dead CMS at startup
-delays nothing and crashes nothing.
+**What you're looking for:** `entryCount: 4`, with nobody having visited the site yet.
+
+**What it proves:** `instrumentation.ts` fetched the CMS index at boot and warmed every article,
+so the first real reader never pays for a cold cache. The warm is fire-and-forget, which means a
+dead CMS at startup delays nothing and crashes nothing — the server comes up either way.
+
+Confirm it in the logs:
 
 ```bash
 ./scripts/demo.sh logs prewarm
@@ -95,7 +103,7 @@ delays nothing and crashes nothing.
 
 ---
 
-## Exercise 1 — The happy path (scenario 1)
+## Test 1 — The happy path (scenario 1)
 
 ```bash
 ./scripts/demo.sh peek
@@ -105,17 +113,21 @@ delays nothing and crashes nothing.
 http=200 time=0.164445s HIT         age=19ms   v1
 ```
 
-**Say:** served from memory, from an entry 19ms old. No CMS call happened at all — confirm with
-`./scripts/demo.sh logs reads`: you'll see `cache_read` with `status:"HIT"` and *no* accompanying
-`upstream_call`.
+**What you're looking for:** `HIT`, a small `age`, and `v1`.
 
-> That 164ms is the **first** request to a freshly booted server — Node is still doing
-> first-request work (module loading, JIT). Run it twice; the second is ~5ms, and every
-> subsequent number in this doc is a warm one.
+**What it proves:** the page was served from memory, from an entry 19ms old, with no CMS call at
+all. Verify that last part with `./scripts/demo.sh logs reads` — you'll see a `cache_read` with
+`status:"HIT"` and *no* accompanying `upstream_call`.
+
+> The 164ms is the **first** request to a freshly booted server, where Node is still doing
+> first-request work (module loading, JIT). Run it twice; the second is ~5ms, and every other
+> timing in this guide is a warm one.
 
 ---
 
-## Exercise 2 — Every failure mode is invisible while the cache is warm (scenarios 4, 7–9)
+## Test 2 — Every failure mode is invisible while the cache is warm (scenarios 4, 7–9)
+
+This is the core requirement of the exercise, in one command.
 
 ```bash
 ./scripts/demo.sh modes
@@ -129,21 +141,24 @@ hang     http=200 time=0.005788s HIT         age=334ms  v1
 corrupt  http=200 time=0.006059s HIT         age=379ms  v1
 ```
 
-**This is the headline result.** The CMS is returning 500s, hanging forever, and serving
-corrupt JSON — and every response is a 200 with correct content in under 10ms. While an entry
-is inside its 1-second fresh window we simply never contact the CMS, so its state is
-irrelevant.
+**What you're looking for:** five rows, all `http=200`, all `HIT`, all `v1`, all single-digit
+milliseconds.
 
-Note `healthy` is the *slowest* of the five, because it's the only one that could have talked to
-the CMS at all. Good line to land.
+**What it proves:** the CMS is returning 500s, hanging forever, and serving corrupt JSON — and
+none of it reaches the reader. While an entry is inside its 1-second fresh window the cache never
+contacts the CMS, so upstream state is simply irrelevant to the response.
+
+Worth noticing: `healthy` is often the *slowest* of the five, because it's the only mode that
+could have talked to the CMS at all.
 
 ---
 
-## Exercise 3 — Catching a STALE serve (scenarios 5, 7)
+## Test 3 — Serving stale rather than failing (scenarios 5, 7)
 
-To see the interesting path you need the entry to be older than the 1s fresh window. The
-background refresher touches every warm key every 2s, so age oscillates 0–2s and roughly half
-of your requests will land stale. `stale` just fires several 0.5s apart:
+Test 2 shows the easy case. To reach the interesting path, the entry has to be older than the 1s
+fresh window. The background refresher touches every warm key every 2s, so age oscillates 0–2s
+and roughly half of your requests will land stale. This command fires several 0.5s apart to catch
+some:
 
 ```bash
 ./scripts/demo.sh stale          # defaults to ?source=down, 8 reads
@@ -158,11 +173,15 @@ http=200 time=0.006991s HIT         age=703ms  v1
 http=200 time=0.222890s STALE       age=1521ms v1
 ```
 
-**Say:** the STALE ones are where the entry had aged past 1s, so we attempted a refresh, the
-CMS returned a 500, and we served the old copy anyway — **the failed response did not overwrite
-the entry**. Version is still correct. Cost: ~220ms instead of 7ms.
+**What you're looking for:** a mix of `HIT` and `STALE`, every row still `http=200` and `v1`. If
+you see all `HIT`, run it again — you're just landing inside the fresh window each time.
 
-Now show the log proving it:
+**What it proves:** on the `STALE` rows the entry had aged past 1s, so the cache attempted a
+refresh, the CMS returned a 500, and the old copy was served anyway. **The failed response did
+not overwrite the entry** — the version is still correct. Cost of the failure: ~220ms instead of
+~7ms. Nobody gets an error page.
+
+The log line carries the whole story:
 
 ```bash
 ./scripts/demo.sh logs '"status":"STALE"'
@@ -173,14 +192,14 @@ Now show the log proving it:
  "upstreamOutcome":"http_error","circuitState":"open","version":1,...}
 ```
 
-One line contains the whole story: what we served, how old it was, what the upstream said, and
-what the breaker thought.
+What was served, how old it was, what the upstream said, and what the breaker thought — one line,
+no correlation required.
 
 > **Why ~220ms and not ~110ms?** The Proxy reads the cache (to decide 200 vs 503) and *then* the
 > page reads it. They're sequential, so a stale page view makes two upstream attempts of ~100ms
 > each. `generateMetadata` and the page component *are* concurrent and do collapse into one.
 
-### To demo `slow` specifically
+### The `slow` mode specifically
 
 ```bash
 ./scripts/demo.sh stale slow 4
@@ -192,17 +211,20 @@ http=200 time=0.823800s STALE       age=1896ms v1
 http=200 time=0.421614s HIT         age=234ms  v1
 ```
 
-The CMS takes 8 seconds; the STALE serve comes back in **~400ms per cache read**. That's the
-bounded wait: we give a refresh 400ms to land, then stop waiting. The refresh keeps running in
-the background and its result lands for the next reader — which is why the *following* request
-is a 421ms `HIT` rather than another stale one.
+**What you're looking for:** a `STALE` around 400ms per cache read, then a `HIT` — not an
+8-second wait anywhere.
 
-> Run this on a **closed** breaker. If you just ran Exercise 4, the circuit is open, so we don't
-> even attempt the call and you'll see 5ms STALEs instead of the bounded wait. Wait ~5s.
+**What it proves:** the CMS takes 8 seconds in this mode, but the read path only gives a refresh
+400ms to land before it stops waiting and serves what it has. The refresh keeps running in the
+background, and its result lands for the next reader — which is why the *following* request is a
+`HIT` rather than another stale serve. A slow upstream costs you 400ms, not 8s, and only once.
+
+> Run this against a **closed** breaker. If you've just run Test 4, the circuit is open, so no
+> call is attempted and you'll see 5ms STALEs instead of the bounded wait. Wait ~5s.
 
 ---
 
-## Exercise 4 — Tripping the circuit breaker (scenario 6)
+## Test 4 — The circuit breaker opens, then heals itself (scenario 6)
 
 ```bash
 ./scripts/demo.sh trip
@@ -213,10 +235,14 @@ is a 421ms `HIT` rather than another stale one.
 breaker: closed
 ```
 
-**Expect to catch this in the logs rather than in the state.** Three consecutive failures open
-it for 5s, but the background refresher — which never sends `?source=`, so it talks to the
-*real* CMS — succeeds every 2s and resets the counter, then closes the circuit on its first
-post-cooldown probe. So the poll usually reads `closed` by the time it runs.
+**What you're looking for:** `closed` — and yes, that's the expected result, which is the point of
+this test.
+
+**What it proves:** three consecutive failures do open the circuit for 5s, but the background
+refresher never sends `?source=`, so it talks to the *real* CMS, succeeds every 2s, resets the
+failure count, and closes the circuit on its first post-cooldown probe. By the time the command
+polls, it's already recovered. The state you're chasing lives in the transition log, not the
+gauge:
 
 ```bash
 ./scripts/demo.sh logs breaker
@@ -226,18 +252,19 @@ post-cooldown probe. So the poll usually reads `closed` by the time it runs.
 {"from":"closed","to":"open","failureCount":3,...,"level":"warn","message":"circuit_transition"}
 ```
 
-That's the point worth making: **the system heals itself without any user request needing to
-discover the recovery.**
+So: **the system heals without any user request having to discover the recovery.** In production
+this is the difference between an alert that clears itself and a page at 3am.
 
-> These are `warn`-level lines, which `logger` writes to **stderr**. `./scripts/demo.sh serve`
+> These are `warn`-level lines, which the logger writes to **stderr**. `./scripts/demo.sh serve`
 > tees with `2>&1` for exactly this reason — pipe stdout alone and every breaker transition
 > vanishes from the log.
 
 ---
 
-## Exercise 5 — The one case with no good answer: 503 (scenario 10)
+## Test 5 — The one case with no good answer: 503 (scenario 10)
 
-A path that has never been cached, against a failing CMS. Nothing to fall back on.
+A path that has never been cached, against a failing CMS. There is nothing to fall back on, so
+this test is about failing *correctly*.
 
 ```bash
 ./scripts/demo.sh cold
@@ -249,14 +276,16 @@ HTTP/1.1 503 Service Unavailable
 cache-control: no-store
 ```
 
-**Say:** two deliberate choices. **503, not 200** — a 200 would be cached at the edge and the
-outage served to every reader for the full 60s TTL. And `no-store` so no layer anywhere retains
-the error page. A page component can't set a status code, which is why this lives in
-[proxy.ts](../proxy.ts).
+**What you're looking for:** `503`, and `cache-control: no-store`.
+
+**What it proves:** two deliberate choices. **503, not 200** — a 200 would be cached at the edge,
+and the outage would then be served to every reader for the full 60s TTL. And `no-store`, so no
+layer anywhere retains the error page. A page component can't set a status code, which is why
+this lives in [proxy.ts](../proxy.ts).
 
 ---
 
-## Exercise 6 — A real 404, and the negative cache (scenario 11)
+## Test 6 — A real 404, and the negative cache (scenario 11)
 
 ```bash
 ./scripts/demo.sh missing
@@ -272,21 +301,23 @@ the error page. A page component can't set a status code, which is why this live
  "upstreamOutcome":"not_found","circuitState":"closed",...}
 ```
 
-**Two requests, one upstream call.** The second was answered entirely from the 30s negative
-cache — it produced no log lines at all, because it short-circuits before the policy engine.
-That's what stops a bad link from generating one CMS call per crawler hit.
+**What you're looking for:** two 404s, but only **one** `upstream_call` in the log.
+
+**What it proves:** the second request was answered entirely from the 30s negative cache. It
+produced no log lines at all, because it short-circuits before the policy engine even runs. That's
+what stops a bad link from generating one CMS call per crawler hit.
 
 Note also that a 404 counts as a breaker **success**: the CMS answered, it just answered "no."
 
-> **Gotcha worth demoing on purpose:** run this *while the breaker is open* and you get **503,
-> not 404**. With the circuit open we never ask, so we can't tell "doesn't exist" from "can't
-> reach the CMS." 503 is the honest answer, and it isn't cached — the next request after the
-> circuit closes returns a real 404. You can see it in the log line: `status: "UNAVAILABLE"`
-> with `circuitState: "open"`.
+> **Worth testing on purpose:** run this *while the breaker is open* and you get **503, not 404**.
+> With the circuit open we never ask, so we can't distinguish "doesn't exist" from "can't reach
+> the CMS" — 503 is the honest answer, and it isn't cached, so the next request after the circuit
+> closes returns a real 404. The log line shows it: `status: "UNAVAILABLE"` with
+> `circuitState: "open"`.
 
 ---
 
-## Exercise 7 — CDN headers (the CDN section of ARCHITECTURE.md)
+## Test 7 — CDN headers (the CDN section of ARCHITECTURE.md)
 
 ```bash
 ./scripts/demo.sh headers
@@ -298,19 +329,23 @@ cache-control: public, s-maxage=60, stale-while-revalidate=300, stale-if-error=8
 surrogate-key: article-investing-2026-07-22-should-you-buy-spacex-stock-before-aug-4
 ```
 
-**Say:** no CDN is hooked up, but the policy is already expressed in the vocabulary one would
-understand. `s-maxage=60` is deliberately longer than our 1s internal window because edge
-invalidation is push-based and the TTL is only a backstop. `stale-if-error=86400` is our
-unbounded-stale rule projected one layer out — the site survives even the *origin* going down.
-`Surrogate-Key` enables purge-by-tag, so one call catches every URL an article is reachable at.
+**What you're looking for:** all three directives on `cache-control`, plus a `surrogate-key`
+derived from the article path.
 
-Then contrast with Exercise 5: errors get `no-store`. Never let an outage become cacheable.
+**What it proves:** no CDN is hooked up here, but the caching policy is already expressed in the
+vocabulary a CDN would understand. `s-maxage=60` is deliberately longer than the 1s internal
+window, because edge invalidation is push-based and the TTL is only a backstop.
+`stale-if-error=86400` is the same unbounded-stale rule from Test 3, projected one layer out — the
+site survives even the *origin* going down. `Surrogate-Key` enables purge-by-tag, so one call
+catches every URL an article is reachable at.
+
+Contrast with Test 5, where errors get `no-store`: an outage should never become cacheable.
 
 ---
 
-## Exercise 8 — Push invalidation, end to end (scenario 12)
+## Test 8 — Push invalidation, end to end (scenario 12)
 
-First, the auth gate:
+First the auth gate, since this endpoint is what a real CMS would call:
 
 ```bash
 ./scripts/demo.sh revalidate
@@ -322,11 +357,14 @@ wrong secret  -> 401
 right secret  -> {"path":"investing/...","status":"REVALIDATED","version":1}
 ```
 
-**Say:** every call here triggers a real upstream fetch, so an open endpoint is a
-request-amplification vector. Constant-time compare, and a missing secret means deny, not
-"auth off."
+**What you're looking for:** 401 for both the missing and the wrong secret; a `REVALIDATED` JSON
+body for the right one.
 
-Now the real thing — publish a correction and read immediately:
+**What it proves:** every accepted call triggers a real upstream fetch, so an unauthenticated
+endpoint here would be a request-amplification vector. The compare is constant-time, and a
+*missing* secret means deny — not "auth off."
+
+Now the actual requirement — publish a correction, then read immediately:
 
 ```bash
 ./scripts/demo.sh correct
@@ -341,16 +379,20 @@ Now the real thing — publish a correction and read immediately:
 {"path":"...","oldVersion":1,"newVersion":2,"trigger":"read","propagationLagMs":123,...}
 ```
 
-**v2 on the very next request**, and it's a `HIT` — the cache was already updated before the
-read arrived. `propagationLagMs: 105` is the wall-clock gap between the CMS stamping `updatedAt`
-and us observing the new version. Tagged with `trigger`, so a silently broken webhook shows up
-as traffic shifting from `push` to `refresher` — you'd see the *lag* regress without anything
-erroring. (The second line is the read path independently confirming the same version; both are
-logged because both observed the change. `correct` publishes and reads back-to-back, so which of
-the two wins the race varies run to run — if you see `trigger:"read"` first, the webhook simply
-landed a few ms later. Either way the reader got v2.)
+**What you're looking for:** `v2` on the very next read, and that read being a `HIT`.
 
-Then the closer:
+**What it proves:** the cache was already updated before the read arrived — no reader paid for the
+correction. `propagationLagMs: 105` is the wall-clock gap between the CMS stamping `updatedAt` and
+the cache observing the new version, tagged with which mechanism got there first. That tagging is
+the operational payoff: a silently broken webhook shows up as traffic shifting from `push` to
+`refresher`, so you'd see the *lag* regress without anything erroring.
+
+> Both a `push` and a `read` line appear because both paths independently observed the change.
+> `correct` publishes and reads back-to-back, so which one wins the race varies run to run — if
+> `trigger:"read"` comes first, the webhook simply landed a few ms later. Either way the reader
+> got v2.
+
+Then re-run Test 2 to confirm the correction survives every failure mode:
 
 ```bash
 ./scripts/demo.sh modes
@@ -364,21 +406,22 @@ hang     http=200 time=0.004568s HIT         age=286ms  v2
 corrupt  http=200 time=0.004729s HIT         age=340ms  v2
 ```
 
-All five return **v2**, all under 10ms. The correction propagated, and it survives every
-failure mode.
+**What you're looking for:** `v2` on all five rows, still under 10ms. Not the old copy, and not an
+error — which together are the whole ask of the exercise.
 
 ---
 
-## Exercise 9 — Proving push is an optimization, not a dependency (scenario 13)
+## Test 9 — Push is an optimization, not a dependency (scenario 13)
 
-**This is the most important exercise in the doc.** A dropped webhook should be a regression in
-speed, not accuracy. Prove it by running a server with push turned off. In a third terminal:
+**The most important test here.** A dropped webhook should be a regression in *speed*, not in
+*accuracy*. The only honest way to check that is to run a server with push genuinely turned off,
+since `CMS_WEBHOOK_URL` is fixed for a process's lifetime. In a third terminal:
 
 ```bash
 npm run demo:no-webhook        # PORT+1, no CMS_WEBHOOK_URL, its own log
 ```
 
-Then, back in the second terminal — `--no-webhook` points every command at that server:
+Then, back in the second terminal — `--no-webhook` points any command at that server:
 
 ```bash
 ./scripts/demo.sh --no-webhook correct
@@ -393,12 +436,13 @@ Then, back in the second terminal — `--no-webhook` points every command at tha
  "propagationLagMs":342,"message":"version_changed"}
 ```
 
-**Say:** no webhook fired — yet the cache corrected itself before anyone asked for the page,
-because the background refresher re-probes every warm article every 2s. `trigger:"refresher"`,
-not `"push"`. Push buys you ~105ms instead of up to ~2s. It doesn't buy you correctness; the
-refresher already guarantees that.
+**What you're looking for:** `v2` again, but `trigger:"refresher"` instead of `"push"`.
 
-To make the "nobody requested it" part airtight, publish and *don't* read:
+**What it proves:** no webhook fired, and the cache still corrected itself — because the
+background refresher re-probes every warm article every 2s. Push buys you ~105ms instead of up to
+~2s. It does not buy you correctness; the refresher already guarantees that.
+
+To make the "nobody had to request it" part airtight, publish and *don't* read:
 
 ```bash
 curl -s -X POST "http://localhost:3001/api/cms/admin?publish-correction=$(
@@ -407,21 +451,23 @@ sleep 3
 ./scripts/demo.sh --no-webhook logs versions
 ```
 
-The `version_changed` line is there with no `caller:"read"` anywhere near it.
+The `version_changed` line is there, with no `caller:"read"` anywhere near it. The cache fixed
+itself with zero traffic.
 
 ---
 
-## Exercise 10 — Reading the instrumentation
+## Test 10 — Answering operational questions from the instrumentation
 
-Three surfaces. Know which one answers which question.
+Three surfaces, each answering a different kind of question. This test is less "run it and check
+the output" and more "find the answer to a question you'd actually have at 3am."
 
 ### 1. Structured logs (stdout + stderr, JSON lines)
 
-Every log line is one JSON object. In production these ship to a log aggregator; here,
+Every log line is one JSON object. In production these would ship to a log aggregator; here,
 `./scripts/demo.sh logs` greps them. Named filters:
 
 ```bash
-./scripts/demo.sh logs reads        # what we served and why
+./scripts/demo.sh logs reads        # what was served and why
 ./scripts/demo.sh logs upstream     # every CMS call, with outcome + duration
 ./scripts/demo.sh logs warn         # failures only
 ./scripts/demo.sh logs breaker      # breaker state changes
@@ -432,19 +478,19 @@ Every log line is one JSON object. In production these ship to a log aggregator;
 
 Anything else is treated as a raw pattern, e.g. `./scripts/demo.sh logs '"status":"STALE"'`.
 
-If you have `jq`, this is the money command — a live tail of exactly what the cache is doing
-for real readers:
+If you have `jq`, this is the one to watch while you drive requests from another terminal — a live
+view of what the cache is doing for real readers:
 
 ```bash
 ./scripts/demo.sh tail
 ```
 
 It filters to `caller=="read"` deliberately: the refresher logs every 2s, so an unfiltered tail
-is too noisy to demo against.
+drowns out anything you're doing by hand.
 
 Field glossary: `caller` is one of `read` / `refresher` / `push` / `prewarm` — it's what keeps
-background traffic out of your user-facing latency percentiles. `status` is the five cache
-outcomes. `circuitState` is the breaker at the moment of that read.
+background traffic out of user-facing latency percentiles. `status` is the five cache outcomes.
+`circuitState` is the breaker at the moment of that read.
 
 ### 2. `/api/_internal/cache-stats`
 
@@ -454,23 +500,23 @@ outcomes. `circuitState` is the breaker at the moment of that read.
 
 Answers the four operational questions at a glance:
 
-| Question | Field |
+| Question | Where to look |
 |---|---|
 | Is the upstream healthy? | `circuitBreaker.state`, plus `upstream_calls` counters by outcome |
 | How stale is anything? | `articleCache.maxAgeMs`, and per-entry `ageMs` |
 | What version is cached? | per-entry `version` |
 | How is the cache performing? | `metrics.counters` / `metrics.histograms` |
 
-No upstream I/O and no auth — it only reads state that's already in memory. It uses a
-non-mutating `peekEntries()` so that *looking* at the cache never perturbs LRU order.
+No upstream I/O and no auth — it only reads state that's already in memory, so it's safe to poll.
+It uses a non-mutating `peekEntries()` so that *looking* at the cache never perturbs LRU order.
 
-The two slices worth pulling out of that blob:
+Two slices are worth pulling out of that blob directly:
 
 ```bash
 ./scripts/demo.sh metrics
 ```
 
-Real output after walking the exercises above:
+Real output after walking the tests above:
 
 ```
 ==> cache reads by status and caller
@@ -489,17 +535,16 @@ Real output after walking the exercises above:
   {'outcome': 'not_found', 'caller': 'read'} p50 104 p95 104 max 104
 ```
 
-Note how cleanly `caller` separates background probing from real reads. That separation is why
-the refresher's 83 revalidations don't pollute the user-facing health signal — and the
-`timeout` row is the `hang` mode hitting the 2s upstream timeout, visible without any user ever
-seeing a slow page.
+**What to notice:** `caller` cleanly separates background probing from real reads. That separation
+is why the refresher's 83 revalidations don't pollute the user-facing health signal. And the
+`timeout` row is the `hang` mode hitting the 2s upstream timeout — fully visible to an operator
+without a single user having seen a slow page.
 
 ### 3. `data-cache-status` in the HTML
 
 This is what `peek` reads. A server component can't set response headers, so the cache status
-rides on the rendered `<article>` element instead. In the browser, inspect the article element
-and you'll see it change as you click through the toolbar. It's also what the e2e tests assert
-on.
+rides on the rendered `<article>` element instead. In the browser, inspect that element and you'll
+see it change as you click through the toolbar. It's also what the e2e tests assert on.
 
 ```bash
 DEMO_VERBOSE=1 ./scripts/demo.sh peek down     # prints the underlying curl
@@ -509,6 +554,9 @@ DEMO_VERBOSE=1 ./scripts/demo.sh peek down     # prints the underlying curl
 
 ## Automated tests
 
+Everything above is also covered by the test suites, so you can check the same behavior without
+driving it by hand:
+
 ```bash
 npm run test        # unit tests, ~0.3s — cache policy, breaker, validator, store
 npm run test:e2e    # Playwright, builds and boots two servers
@@ -516,31 +564,35 @@ npm run test:e2e    # Playwright, builds and boots two servers
 
 The e2e suite spins up a **second server on `PORT+1` with no `CMS_WEBHOOK_URL`** — the same
 arrangement as `npm run demo:no-webhook` — because that env var is fixed for a process's
-lifetime; you can't toggle push invalidation per test. That's how Exercise 9 is tested honestly
+lifetime; you can't toggle push invalidation per test. That's how Test 9 is verified honestly
 rather than simulated.
 
 | Spec | Covers |
 |---|---|
-| [failure-modes.spec.ts](../tests/e2e/failure-modes.spec.ts) | Exercises 2–3: healthy, slow, down, hang, corrupt |
-| [prewarm.spec.ts](../tests/e2e/prewarm.spec.ts) | Exercise 0, from a genuinely cold server |
-| [cdn-headers.spec.ts](../tests/e2e/cdn-headers.spec.ts) | Exercises 5 and 7 |
-| [push-invalidation.spec.ts](../tests/e2e/push-invalidation.spec.ts) | Exercise 8, including both auth rejections |
-| [corrections.spec.ts](../tests/e2e/corrections.spec.ts) | Exercise 9 — all three propagation triggers, independently |
+| [failure-modes.spec.ts](../tests/e2e/failure-modes.spec.ts) | Tests 2–3: healthy, slow, down, hang, corrupt |
+| [prewarm.spec.ts](../tests/e2e/prewarm.spec.ts) | Test 0, from a genuinely cold server |
+| [cdn-headers.spec.ts](../tests/e2e/cdn-headers.spec.ts) | Tests 5 and 7 |
+| [push-invalidation.spec.ts](../tests/e2e/push-invalidation.spec.ts) | Test 8, including both auth rejections |
+| [corrections.spec.ts](../tests/e2e/corrections.spec.ts) | Test 9 — all three propagation triggers, independently |
 | [toolbar.spec.ts](../tests/e2e/toolbar.spec.ts) | The browser toolbar renders every mode |
+
+`npm run test:e2e` needs a Chromium binary; if you see `Executable doesn't exist`, run
+`npx playwright install chromium` first. Only `toolbar.spec.ts` requires a browser — the rest
+drive HTTP directly.
 
 ---
 
-## Troubleshooting the demo
+## If something looks wrong
 
 | Symptom | Cause |
 |---|---|
 | `error: no server on http://localhost:3000` | Nothing is serving that port. `npm run demo` in another terminal — or you overrode `PORT` in only one of the two |
 | Everything is `HIT`, you never see `STALE` | The refresher keeps entries under 1s about half the time. Fire several 0.5s apart: `./scripts/demo.sh stale` |
-| `breaker` always says `closed` | Expected — the refresher heals it within seconds. Use `./scripts/demo.sh logs breaker` instead |
+| `breaker` always says `closed` | Expected — the refresher heals it within seconds. Use `./scripts/demo.sh logs breaker` instead (Test 4) |
 | `logs breaker` and `logs warn` are empty | Warn lines go to stderr. `serve` tees with `2>&1`; a hand-rolled `npm run start \| tee` drops them |
-| A correction doesn't appear instantly | `CMS_WEBHOOK_URL` or `REVALIDATE_SECRET` isn't set — check [.env.example](../.env.example) and any `.env` you made. It'll still arrive within ~2s via the refresher, which is Exercise 9's whole point |
+| A correction doesn't appear instantly | `CMS_WEBHOOK_URL` or `REVALIDATE_SECRET` isn't set — check [.env.example](../.env.example) and any `.env` you made. It'll still arrive within ~2s via the refresher, which is Test 9's whole point |
 | Revalidate returns 401 with the right secret | The header is `x-revalidate-secret`, and the server's `REVALIDATE_SECRET` must match the one the script is using — same `.env` for both terminals |
-| `stale slow` returns 5ms STALEs, not ~400ms | The breaker is open from a previous exercise, so no call is attempted. Wait ~5s |
-| A 404 comes back as 503 | The breaker is open. Wait ~5s and retry — see Exercise 6 |
+| `stale slow` returns 5ms STALEs, not ~400ms | The breaker is open from an earlier test, so no call is attempted. Wait ~5s |
+| A 404 comes back as 503 | The breaker is open. Wait ~5s and retry — see Test 6 |
 | Versions reset to v1 | Corrections live in an in-memory mock CMS. Restarting the server resets them |
 | Two servers fight over a port | Every process needs its own `PORT`; the CMS base URL derives from it. `--no-webhook` handles the second one for you |
