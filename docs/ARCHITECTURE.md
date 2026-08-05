@@ -532,7 +532,8 @@ rather than left to be discovered.
 | `CACHE_MAX_ENTRIES` 500 | store | LRU bound so memory can't grow without limit |
 
 **Environment:** `REVALIDATE_SECRET` (required for push; missing means deny-by-default, not
-"auth off"), `CMS_WEBHOOK_URL` (enables push at all), `PORT`, `CMS_BASE_URL`.
+"auth off"), `CMS_WEBHOOK_URL` (enables push at all), `PORT`, `CMS_BASE_URL`. All four are
+documented in [.env.example](../.env.example), which is what the demo runbook loads.
 
 **Diagnostics:** `GET /api/_internal/cache-stats` returns circuit state, entry count, max entry
 age, per-key age and version, and all counters and histograms. No upstream I/O, so it's safe
