@@ -138,6 +138,10 @@ scripts/demo.sh — drive the article cache by hand
 
   revalidate            the push-invalidation auth gate: no secret, then the secret
   correct               publish a correction, then read it back
+  correct-silent        publish a correction and never read it — polls
+                        cache-stats until the background refresher (not a
+                        read) flips the cached version. Pairs with
+                        --no-webhook to isolate refresher-only propagation
 
   logs [what]           grep \$DEMO_LOG. what = reads | upstream | warn | breaker |
                         versions | prewarm | background, or any pattern
@@ -352,6 +356,56 @@ cmd_correct() {
   fi
 }
 
+cmd_correct_silent() {
+  require_server
+  require_log
+
+  local path
+  path="$(curl -s "$BASE/api/cms/content" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["articles"][0]["path"])
+')"
+  [[ -n "$path" ]] || die "could not list articles from $BASE/api/cms/content"
+
+  version_of() {
+    curl -s "$STATS_URL" | python3 -c '
+import json, sys
+path = sys.argv[1]
+for e in json.load(sys.stdin)["articleCache"]["entries"]:
+    if e["path"] == path:
+        print(e["version"])
+        break
+else:
+    print("?")
+' "$path"
+  }
+
+  local before
+  before="$(version_of)"
+  echo "==> cached version before publish: $before  (path: $path)"
+
+  echo -n "==> publish (no read follows): "
+  curl -s -X POST "$BASE/api/cms/admin?publish-correction=$path"
+  echo
+
+  echo "==> polling cache-stats only — never hitting /articles/$path"
+  local elapsed=0 v="$before"
+  while [[ "$v" == "$before" && $elapsed -lt 90 ]]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    v="$(version_of)"
+    printf '    t+%3ss  cached version=%s\n' "$elapsed" "$v"
+  done
+
+  if [[ "$v" == "$before" ]]; then
+    echo "still $before after 90s — REFRESH_INTERVAL_MS may be set higher than that; keep waiting or lower it"
+  else
+    echo
+    echo "==> the refresher changed it with zero reads:"
+    grep version_changed "$DEMO_LOG" | tail -1
+  fi
+}
+
 cmd_logs() {
   require_log
   local what="${1:-}"
@@ -400,6 +454,7 @@ case "$command" in
   missing)    cmd_missing ;;
   revalidate) cmd_revalidate ;;
   correct)    cmd_correct ;;
+  correct-silent) cmd_correct_silent ;;
   logs)       cmd_logs "$@" ;;
   tail)       cmd_tail ;;
   *)          echo "unknown command: $command" >&2; echo >&2; cmd_help >&2; exit 1 ;;
