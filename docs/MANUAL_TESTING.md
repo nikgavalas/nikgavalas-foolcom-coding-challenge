@@ -35,6 +35,10 @@ same values, so this works with no `.env` at all. Any var can be overridden inli
 (`PORT=3005 ./scripts/demo.sh peek`), and `--no-webhook` is a global flag that points any command
 at the second server used in Test 9.
 
+If you edit `.env` after already having a build, run `npm run build` before `npm run demo` —
+`demo.sh serve` only builds when `.next` doesn't exist yet, and env values are baked in at build
+time, so it won't pick up the change on its own.
+
 Two things about the setup that affect what you'll see:
 
 - `npm run demo` sets `REVALIDATE_SECRET` and derives `CMS_WEBHOOK_URL` from `PORT`. Without

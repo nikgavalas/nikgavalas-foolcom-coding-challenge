@@ -2,8 +2,8 @@
 
 > **Scaffolding, not a deliverable.** This is the build checklist for the caching work, one step
 > per PR. Each step carries a prompt that can be pasted into Claude Code as-is. Delete or trim this
-> file before submitting; the durable docs are `ARCHITECTURE.md`, `DESIGN_OPTIONS.md` and
-> `PRODUCTION.md`.
+> file before submitting; the durable docs are `ARCHITECTURE.md`, `DESIGN_OPTIONS.md`,
+> `MANUAL_TESTING.md`, and `START_HERE.md`.
 
 ## Why these steps are ordered this way
 
@@ -30,7 +30,7 @@ Step 1 comes first so there is a failing acceptance test to build against.
 | 9 | Push invalidation | `app/api/internal/revalidate/` | ☑ |
 | 10 | Observability | `lib/observability/` | ☑ |
 | 11 | Correction e2e | `tests/e2e/` | ☑ |
-| 12 | Final docs | `docs/` | ☐ |
+| 12 | Final docs | `docs/` | ☑ |
 
 ## Parallelization
 
@@ -498,10 +498,14 @@ Write the durable documentation.
    picked or rejected, including Redis for cross-replica sharing and the disk L2 tier we
    chose not to build.
 
-3. docs/PRODUCTION.md — three sections: Edge/CDN, Personalization & entitlement, and
-   Observability & alerting. See the approved plan for the full content brief.
-
 Then delete or trim docs/IMPLEMENTATION_PLAN.md — it is scaffolding.
 ```
+
+**Note on scope:** the original brief for this step called for a separate `docs/PRODUCTION.md`
+(Edge/CDN, Personalization & entitlement, Observability & alerting). In practice that content
+was small enough, and tied closely enough to the design decisions it explains, that it was
+folded directly into `ARCHITECTURE.md` instead — see
+[How a CDN fits in](ARCHITECTURE.md#how-a-cdn-fits-in) and
+[Known interactions](ARCHITECTURE.md#known-interactions). No separate file was created.
 
 **Done when:** a reader can understand the system from `ARCHITECTURE.md` alone.
