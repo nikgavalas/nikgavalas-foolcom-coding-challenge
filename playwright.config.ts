@@ -2,7 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 const PORT = process.env.PORT ?? "3000";
 const baseURL = `http://localhost:${PORT}`;
-const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET ?? "test-revalidate-secret";
+const REVALIDATE_SECRET =
+  process.env.REVALIDATE_SECRET ?? "test-revalidate-secret";
 
 // A second server with no CMS_WEBHOOK_URL, so tests/e2e/corrections.spec.ts can
 // exercise push-invalidation-disabled propagation (background refresher, read-path
@@ -19,9 +20,7 @@ export default defineConfig({
   // corrupt each other's state.
   fullyParallel: false,
   workers: 1,
-  reporter: process.env.CI
-    ? [["github"], ["html", { open: "never" }]]
-    : "list",
+  reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,
   },
@@ -34,6 +33,7 @@ export default defineConfig({
       env: {
         PORT,
         REVALIDATE_SECRET,
+        REFRESH_INTERVAL_MS: "2000",
         CMS_WEBHOOK_URL: `${baseURL}/api/internal/revalidate`,
       },
       reuseExistingServer: !process.env.CI,
@@ -48,6 +48,7 @@ export default defineConfig({
       url: noWebhookBaseURL,
       env: {
         PORT: NO_WEBHOOK_PORT,
+        REFRESH_INTERVAL_MS: "2000",
       },
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
