@@ -10,8 +10,7 @@ in the diff.
 
 ## Reading the problem
 
-I started by reading the README end to end and poking at the app in its broken state — hitting each
-`?source=` mode to see it fail for real, rather than taking the failure descriptions on faith. From
+I started by reading the README end to end and poking around the app and source. From
 there I went back and forth with AI quite a bit, researching the option space: where a cache like
 this should live, what policies would actually satisfy "stay fast and accurate under failure," what
 a real CDN would add on top. That reasoning — the options considered and why each was picked or
@@ -20,10 +19,12 @@ rejected — is written up in [DESIGN_OPTIONS.md](DESIGN_OPTIONS.md) rather than
 ## Planning before building
 
 Once I was happy with the direction, I had the AI turn it into
-[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). This is my usual approach to a problem of any
-size, AI or not: break it into small, independently reviewable chunks before writing any code. Only
-once the chunks were small enough did I have the AI actually implement them, one at a time. The tool
-changed; the habit of decomposing first didn't.
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). This is my approach once a problem is too big to
+just plan-and-code in a single AI session: break it into small, independently reviewable chunks
+before writing any code. Only once the chunks were small enough did I have the AI actually
+implement them. This is the same discipline I used before AI existed — plan first, break the plan
+into small reviewable pieces, then implement piece by piece — just faster now that AI can execute
+each piece quickly.
 
 ## Trying parallel implementation
 
@@ -51,7 +52,7 @@ need to know that, given a set of inputs, the outputs are what you expect. You d
 exactly how the reactor works internally, just that it reliably does.
 
 I applied that here. My effort went into giving the best "inputs" — detailed instructions and a plan
-I'd already thought through — and then into writing rigorous automated tests plus a very detailed
+I'd already thought through — and then into writing automated tests plus a very detailed
 manual testing pass to confirm the "reactor" produces the right outputs. I did not read every line of
 the implementation.
 
