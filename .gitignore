@@ -34,6 +34,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...opting in: .env.example holds no secrets and documents the demo setup.
+!.env.example
 
 # vercel
 .vercel

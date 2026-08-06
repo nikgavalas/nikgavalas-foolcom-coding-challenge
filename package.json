@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "demo": "./scripts/demo.sh serve",
+    "demo:no-webhook": "./scripts/demo.sh serve --no-webhook",
     "lint": "eslint",
     "test": "vitest run",
     "test:e2e": "playwright test"

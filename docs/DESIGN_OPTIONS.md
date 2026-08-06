@@ -52,7 +52,8 @@ collapses the moment the page carries anything user-specific. See *Personalizati
 the decision that question turns on.
 
 A3 is not wrong, it is simply a **different layer**. It describes a CDN, which belongs *in front of*
-this cache rather than instead of it. `PRODUCTION.md` covers that.
+this cache rather than instead of it. See
+[How a CDN fits in](ARCHITECTURE.md#how-a-cdn-fits-in) in `ARCHITECTURE.md`.
 
 ---
 
@@ -206,4 +207,5 @@ The rule: **cache keys may include entitlement class, never user identity.** Tie
 3-5; user ID has cardinality in the millions. Wanting to key by user means caching at the wrong
 layer.
 
-`PRODUCTION.md` covers the consequences for the edge tier, where this constraint actually bites.
+See point 1 under [How a CDN fits in](ARCHITECTURE.md#how-a-cdn-fits-in) in `ARCHITECTURE.md` for
+the consequences at the edge tier, where this constraint actually bites.
