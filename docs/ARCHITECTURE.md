@@ -22,6 +22,28 @@ copy of an article, the only thing that can replace it is a better copy.
 
 ---
 
+## Failure types, and what survives them
+
+Before meeting all ten pieces, it's worth seeing the ones whose specific job is to keep serving
+correct content despite something going wrong upstream — as opposed to the pieces that route or
+observe a request. Each row below is a failure mode this document comes back to repeatedly in
+the scenario walkthroughs further down.
+
+| Failure | System that survives it | How |
+|---|---|---|
+| CMS is down (`down`, 500s) | **Circuit breaker** | 3 failures → stop calling for 5s; entry left untouched so stale keeps serving |
+| CMS never responds (`hang`) | **Circuit breaker** + Client's 2s abort | Same breaker path, plus the abort protects the socket regardless of breaker state |
+| CMS returns 200 with garbage (`corrupt`) | **Validator** | Only validated data can overwrite the Store; a fast corrupt response is treated like a slow one — stale served |
+| Server just booted, cache empty | **Prewarm** | Fire-and-forget fill at boot; a request that beats it just takes the normal cold path |
+| Correction published, webhook dropped | **Background refresher** | Re-probes every warm path every `REFRESH_INTERVAL_MS`; also what recovers the breaker with no user request involved |
+| Crawler/bad link hammering a 404 | **Negative cache** | Remembers 404s for 30s so repeated misses don't reach the CMS |
+
+Every one of these ultimately leans on the same invariant from above: a cache entry is only ever
+overwritten by a successful, validated response, so none of these systems ever has to *undo*
+anything — they just decide when it's safe to keep waiting versus when to serve what's already
+good. The full set of components — including the ones above and the ones that route and observe
+requests rather than survive failures — is below.
+
 ## The cast
 
 Ten small pieces. Every diagram below refers to them by these short names.
